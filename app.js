@@ -391,6 +391,20 @@ function boot() {
   if (!me) { show("sOnboard"); return; }
   show("sHome"); renderAll(); startPeer(); handleHash();
 }
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+// Updates: check for a new version whenever the app comes back, and switch to it right away.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+  let reloaded = false;
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || reloaded) return;
+    const go = () => { if (call) return setTimeout(go, 5000); reloaded = true; location.reload(); };
+    go();
+  });
+  const checkUpdate = () => navigator.serviceWorker.getRegistration().then((r) => r && r.update()).catch(() => {});
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) checkUpdate(); });
+  setInterval(checkUpdate, 10 * 60 * 1000);
+}
+setInterval(() => { const n = $("netLbl"); if (n) n.textContent = open ? "servidor conectado ✓" : "sin servidor ✗"; }, 1000);
 boot();
 })();
