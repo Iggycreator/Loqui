@@ -167,7 +167,11 @@ function setupConn(conn) {
 function send(id, obj) { const c = conns.get(id); if (c && c.open) { try { c.send(obj); return true; } catch {} } return false; }
 function flush(id) {
   const list = msgsOf(id); let changed = false;
-  for (const m of list) if (m.from === "me" && m.status === "pending" && send(id, { t: "msg", mid: m.mid, text: m.text, ts: m.ts })) { m.status = "sent"; changed = true; }
+  for (const m of list) {
+    if (m.from !== "me" || m.status !== "pending") continue;
+    if (m.kind) { pushMedia(id, m).then((ok) => ok && setStatus(id, m.mid, "sent")); continue; }
+    if (send(id, { t: "msg", mid: m.mid, text: m.text, ts: m.ts })) { m.status = "sent"; changed = true; }
+  }
   if (changed) { saveMsgs(id, list); if (current === id) renderMsgs(); }
 }
 function onData(id, d) {
@@ -187,6 +191,7 @@ function onData(id, d) {
     }
     send(id, { t: "ack", mid: d.mid });
   }
+  else if (d.t === "media") { onMedia(id, d); }
   else if (d.t === "ack") {
     const list = msgsOf(id); const m = list.find((x) => x.mid === d.mid);
     if (m) { m.status = "delivered"; saveMsgs(id, list); if (current === id) renderMsgs(); }
@@ -195,6 +200,178 @@ function onData(id, d) {
   else if (d.t === "call-end" || d.t === "call-decline") {
     if (call && call.id === id) endCall(d.t === "call-decline" ? "Llamada rechazada" : "Llamada terminada", true);
   }
+}
+
+// ---------------------------------------------------------------- media (photos + voice notes)
+// Files live in IndexedDB (much larger than localStorage); messages keep only metadata.
+const MAX_MEDIA = 6 * 1024 * 1024;
+const MID_RE = /^[a-z0-9]{6,32}$/i;
+const idb = (() => {
+  let dbp = null;
+  const open = () => dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open("loqui", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("media");
+    r.onsuccess = () => res(r.result); r.onerror = () => { dbp = null; rej(r.error); };
+  }));
+  const run = async (mode, fn) => { const db = await open(); return new Promise((res, rej) => {
+    const t = db.transaction("media", mode); const req = fn(t.objectStore("media"));
+    t.oncomplete = () => res(req && req.result); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+  }); };
+  return { put: (k, v) => run("readwrite", (st) => st.put(v, k)), get: (k) => run("readonly", (st) => st.get(k)), del: (k) => run("readwrite", (st) => st.delete(k)) };
+})();
+const urls = new Map();     // mid -> object URL
+const players = new Map();  // mid -> HTMLAudioElement (survives re-renders)
+async function mediaUrl(mid) {
+  if (urls.has(mid)) return urls.get(mid);
+  const rec = await idb.get(mid).catch(() => null); if (!rec || !rec.blob) return null;
+  const u = URL.createObjectURL(rec.blob); urls.set(mid, u); return u;
+}
+function forgetMedia(mid) {
+  const u = urls.get(mid); if (u) URL.revokeObjectURL(u); urls.delete(mid);
+  const a = players.get(mid); if (a) { a.pause(); players.delete(mid); }
+  idb.del(mid).catch(() => {});
+}
+const fmtDur = (sec) => { sec = Math.max(0, Math.round(sec || 0)); return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0"); };
+const preview = (m) => m.kind === "img" ? "📷 Foto" : m.kind === "audio" ? "🎤 Nota de voz " + fmtDur(m.dur) : (m.text || "");
+
+async function sendMedia(kind, blob, extra) {
+  const id = current; if (!id || !blob) return;
+  if (blob.size > MAX_MEDIA) return toast("El archivo es demasiado grande");
+  const m = Object.assign({ mid: uid(), from: "me", kind, mime: blob.type || "", ts: Date.now(), status: "pending" }, extra);
+  try { await idb.put(m.mid, { blob, cid: id }); } catch { return toast("No hay espacio para guardar el archivo"); }
+  const list = msgsOf(id); list.push(m); saveMsgs(id, list);
+  const c = contact(id); if (c) { c.last = "Tú: " + preview(m); c.ts = m.ts; saveContacts(); }
+  if (current === id) renderMsgs(); renderAll();
+  if (await pushMedia(id, m)) setStatus(id, m.mid, "sent"); else connect(id);
+}
+async function pushMedia(id, m) {
+  if (!isOnline(id)) return false;
+  const rec = await idb.get(m.mid).catch(() => null); if (!rec) return false;
+  const data = await rec.blob.arrayBuffer();
+  return send(id, { t: "media", mid: m.mid, kind: m.kind, mime: m.mime, dur: m.dur || 0, w: m.w || 0, h: m.h || 0, ts: m.ts, data });
+}
+function setStatus(id, mid, st) {
+  const list = msgsOf(id); const m = list.find((x) => x.mid === mid);
+  if (m && m.status !== "delivered") { m.status = st; saveMsgs(id, list); if (current === id) renderMsgs(); }
+}
+async function onMedia(id, d) {
+  if (!MID_RE.test(String(d.mid)) || (d.kind !== "img" && d.kind !== "audio") || !d.data) return;
+  const already = msgsOf(id).some((m) => m.mid === d.mid);
+  if (!already) {
+    const blob = new Blob([d.data], { type: String(d.mime || "").slice(0, 60) });
+    if (blob.size > MAX_MEDIA) return;
+    try { await idb.put(d.mid, { blob, cid: id }); } catch { return; }
+    const list = msgsOf(id);
+    if (!list.some((m) => m.mid === d.mid)) {
+      const m = { mid: d.mid, from: "them", kind: d.kind, mime: String(d.mime || "").slice(0, 60), dur: Math.min(600, +d.dur || 0), w: +d.w || 0, h: +d.h || 0, ts: Date.now() };
+      list.push(m); saveMsgs(id, list);
+      const c = contact(id);
+      if (c) { c.last = preview(m); c.ts = m.ts; if (current !== id || document.hidden) c.unread = (c.unread || 0) + 1; saveContacts(); }
+      if (current === id) renderMsgs(); renderAll();
+      if (current !== id || document.hidden) { ping(); notify(c ? c.name : "Loqui", preview(m)); }
+    }
+  }
+  send(id, { t: "ack", mid: d.mid });
+}
+
+// photos
+async function compressImage(file) {
+  let src, revoke = null;
+  try { src = await createImageBitmap(file, { imageOrientation: "from-image" }); }
+  catch { src = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; revoke = i.src = URL.createObjectURL(file); }); }
+  const W = src.width || src.naturalWidth, H = src.height || src.naturalHeight;
+  const k = Math.min(1, 1600 / Math.max(W, H)); const w = Math.round(W * k), h = Math.round(H * k);
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h; cv.getContext("2d").drawImage(src, 0, 0, w, h);
+  if (revoke) URL.revokeObjectURL(revoke);
+  const blob = await new Promise((r) => cv.toBlob(r, "image/jpeg", 0.8));
+  return { blob, w, h };
+}
+$("btnPhoto").onclick = () => { if (current) $("inPhoto").click(); };
+$("inPhoto").onchange = async (e) => {
+  const f = e.target.files && e.target.files[0]; e.target.value = ""; if (!f) return;
+  try { const { blob, w, h } = await compressImage(f); await sendMedia("img", blob, { w, h }); }
+  catch { toast("No se pudo abrir esa imagen"); }
+};
+function openViewer(u) { $("viewerImg").src = u; $("viewer").hidden = false; }
+$("viewer").onclick = () => { $("viewer").hidden = true; $("viewerImg").removeAttribute("src"); };
+
+// voice notes
+const AUDIO_TYPES = ["audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/aac", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
+let rec = null, recTimer = null;
+async function startRec() {
+  if (rec || call || !current) return;
+  if (!window.MediaRecorder) return toast("Este teléfono no permite grabar audio aquí");
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
+  catch { return toast("Permite el micrófono para grabar notas de voz"); }
+  const type = AUDIO_TYPES.find((t) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
+  let mr; try { mr = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 48000 } : undefined); }
+  catch { mr = new MediaRecorder(stream); }
+  const r = { mr, stream, chunks: [], start: Date.now(), cancel: false, cid: current };
+  rec = r;
+  mr.ondataavailable = (e) => { if (e.data && e.data.size) r.chunks.push(e.data); };
+  mr.onstop = async () => {
+    r.stream.getTracks().forEach((t) => t.stop());
+    clearInterval(recTimer); rec = null; $("recBar").hidden = true; $("composer").hidden = false;
+    const dur = (Date.now() - r.start) / 1000;
+    if (r.cancel) return;
+    if (dur < 0.8) return toast("Nota muy corta");
+    const blob = new Blob(r.chunks, { type: (mr.mimeType || type || "audio/webm").split(";")[0] });
+    if (current === r.cid) await sendMedia("audio", blob, { dur });
+  };
+  mr.start(250);
+  $("composer").hidden = true; $("recBar").hidden = false; $("recTime").textContent = "0:00";
+  recTimer = setInterval(() => {
+    const sec = (Date.now() - r.start) / 1000; $("recTime").textContent = fmtDur(Math.floor(sec));
+    if (sec >= 180) stopRec(false);
+  }, 250);
+  if (navigator.vibrate) navigator.vibrate(30);
+}
+function stopRec(cancel) { if (!rec) return; rec.cancel = cancel; try { rec.mr.stop(); } catch {} }
+$("btnRecCancel").onclick = () => stopRec(true);
+$("btnRecSend").onclick = () => stopRec(false);
+
+const ICON_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4v16l13-8z"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>';
+function voiceBubble(m) {
+  const wrap = document.createElement("div"); wrap.className = "vn";
+  const btn = document.createElement("button"); btn.setAttribute("aria-label", "Reproducir nota de voz");
+  const bar = document.createElement("div"); bar.className = "vbar"; const fill = document.createElement("i"); bar.append(fill);
+  const t = document.createElement("span"); t.className = "vt"; t.textContent = fmtDur(m.dur);
+  wrap.append(btn, bar, t);
+  const paint = () => {
+    const a = players.get(m.mid); const playing = a && !a.paused;
+    btn.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
+    const total = (a && isFinite(a.duration) && a.duration) || m.dur || 0;
+    fill.style.width = a && total ? Math.min(100, (a.currentTime / total) * 100) + "%" : "0%";
+    t.textContent = a && a.currentTime > 0 ? fmtDur(a.currentTime) : fmtDur(m.dur);
+  };
+  wrap._paint = paint; wrap.dataset.vn = m.mid; paint();
+  btn.onclick = async () => {
+    let a = players.get(m.mid);
+    if (!a) {
+      const u = await mediaUrl(m.mid); if (!u) return toast("Audio no disponible");
+      a = new Audio(u); a.preload = "auto"; players.set(m.mid, a);
+      const repaint = () => document.querySelectorAll(".vn").forEach((el) => { if (el.dataset.vn === m.mid && el._paint) el._paint(); });
+      a.ontimeupdate = repaint; a.onplay = repaint; a.onpause = repaint;
+      a.onended = () => { a.currentTime = 0; repaint(); };
+      a.onerror = () => toast("Este teléfono no puede reproducir ese formato de audio");
+    }
+    if (a.paused) { players.forEach((o) => { if (o !== a) o.pause(); }); a.play().catch(() => toast("No se pudo reproducir")); }
+    else a.pause();
+  };
+  return wrap;
+}
+function photoBubble(m, box) {
+  const img = document.createElement("img"); img.className = "ph"; img.alt = "Foto";
+  if (m.w && m.h) img.style.aspectRatio = m.w + " / " + m.h;
+  mediaUrl(m.mid).then((u) => {
+    if (!u) { img.alt = "Foto no disponible"; return; }
+    const near = box.scrollHeight - box.scrollTop - box.clientHeight < 200;
+    img.onload = () => { if (near) box.scrollTop = box.scrollHeight; };
+    img.src = u; img.onclick = () => openViewer(u);
+  });
+  return img;
 }
 
 // ---------------------------------------------------------------- messages
@@ -351,7 +528,10 @@ function renderMsgs() {
   for (const m of msgsOf(current)) {
     const day = fmtDay(m.ts); if (day !== lastDay) { const d = document.createElement("div"); d.className = "day"; d.textContent = day; box.append(d); lastDay = day; }
     if (m.from === "sys") { const s = document.createElement("div"); s.className = "sys"; s.textContent = m.text; box.append(s); continue; }
-    const b = document.createElement("div"); b.className = "b" + (m.from === "me" ? " me" : ""); b.textContent = m.text;
+    const b = document.createElement("div"); b.className = "b" + (m.from === "me" ? " me" : "") + (m.kind ? " media" : "");
+    if (m.kind === "img") b.append(photoBubble(m, box));
+    else if (m.kind === "audio") b.append(voiceBubble(m));
+    else b.textContent = m.text;
     const meta = document.createElement("span"); meta.className = "meta";
     meta.textContent = fmtTime(m.ts) + (m.from === "me" ? (m.status === "delivered" ? " ✓✓" : m.status === "sent" ? " ✓" : " ⏱") : "");
     b.append(meta); box.append(b);
@@ -363,7 +543,7 @@ function openChat(id) {
   show("sChat"); renderChatHeader(); renderMsgs(); connect(id);
   try { location.hash = "chat-" + id; } catch {}
 }
-function closeChat() { current = null; show("sHome"); renderAll(); try { history.replaceState(null, "", location.pathname); } catch {} }
+function closeChat() { stopRec(true); players.forEach((a) => a.pause()); current = null; show("sHome"); renderAll(); try { history.replaceState(null, "", location.pathname); } catch {} }
 
 // ---------------------------------------------------------------- dialogs
 const shareLink = () => location.origin + location.pathname + "#add=" + me.id + "&n=" + encodeURIComponent(me.name);
@@ -397,6 +577,7 @@ $("btnDel").onclick = () => {
   if (!delArmed) { delArmed = true; $("btnDel").textContent = "Toca otra vez para confirmar"; return; }
   const id = current; $("dlgInfo").hidden = true;
   dropConn(id); contacts = contacts.filter((c) => c.id !== id); saveContacts();
+  msgsOf(id).forEach((m) => { if (m.kind) forgetMedia(m.mid); });
   try { localStorage.removeItem("loqui.msgs." + id); } catch {}
   closeChat(); toast("Contacto eliminado");
 };
@@ -406,8 +587,14 @@ document.querySelectorAll(".veil").forEach((v) => v.addEventListener("click", (e
 // ---------------------------------------------------------------- wiring
 function autosize() { const ta = $("inMsg"); ta.style.height = "auto"; ta.style.height = Math.min(140, ta.scrollHeight) + "px"; }
 $("inMsg").addEventListener("input", () => { autosize(); if (current && Date.now() - (window._lastTyping || 0) > 2000) { window._lastTyping = Date.now(); send(current, { t: "typing" }); } });
-$("inMsg").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer:coarse)").matches) { e.preventDefault(); sendMessage(); } });
-$("btnSend").onclick = sendMessage;
+$("inMsg").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer:coarse)").matches) { e.preventDefault(); sendMessage(); syncSendBtn(); } });
+function syncSendBtn() {
+  const has = $("inMsg").value.trim().length > 0;
+  $("icoSend").hidden = !has; $("icoMic").hidden = has;
+  $("btnSend").setAttribute("aria-label", has ? "Enviar" : "Grabar nota de voz");
+}
+$("btnSend").onclick = () => { if ($("inMsg").value.trim()) { sendMessage(); syncSendBtn(); } else startRec(); };
+$("inMsg").addEventListener("input", syncSendBtn);
 $("btnBack").onclick = closeChat;
 $("btnCall").onclick = () => current && startCall(current);
 $("btnAdd").onclick = () => openAdd();
