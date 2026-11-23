@@ -266,8 +266,7 @@ function wireMedia(media) {
 // Remote voice goes through a gain + limiter so it is clearly louder than the phone's
 // default call level, without distorting. The <audio> element stays attached (muted)
 // because some browsers only deliver WebRTC audio to Web Audio while it is playing.
-const BOOSTS = [2, 3.5, 1];
-let boostIdx = 0, boostNode = null, boostSrc = null;
+let vol = Number(store.get("vol", 2.5)) || 2.5, boostNode = null, boostSrc = null;
 function playRemote(remote) {
   const a = $("remoteAudio"); a.srcObject = remote;
   const c = audioCtx();
@@ -275,23 +274,23 @@ function playRemote(remote) {
     try {
       stopBoost();
       boostSrc = c.createMediaStreamSource(remote);
-      boostNode = c.createGain(); boostNode.gain.value = BOOSTS[boostIdx];
+      boostNode = c.createGain(); boostNode.gain.value = vol;
       const lim = c.createDynamicsCompressor();
       lim.threshold.value = -6; lim.knee.value = 6; lim.ratio.value = 12; lim.attack.value = 0.003; lim.release.value = 0.15;
       boostSrc.connect(boostNode).connect(lim).connect(c.destination);
-      a.muted = true; a.volume = 0;
+      a.muted = true;
     } catch { a.muted = false; a.volume = 1; }
   }
   a.play().catch(() => {});
-  updateSpk();
+  updateVol(); $("volBox").hidden = false;
 }
 function stopBoost() { try { boostSrc && boostSrc.disconnect(); } catch {} try { boostNode && boostNode.disconnect(); } catch {} boostSrc = boostNode = null; }
-function updateSpk() { $("spkLbl").textContent = boostNode ? "Volumen x" + String(BOOSTS[boostIdx]).replace(".", ",") : "Volumen"; $("btnSpk").classList.toggle("on", boostIdx === 1); }
-function cycleBoost() {
-  boostIdx = (boostIdx + 1) % BOOSTS.length;
-  if (boostNode) boostNode.gain.value = BOOSTS[boostIdx];
-  updateSpk();
+function updateVol() {
+  $("volRange").value = vol; $("volLbl").textContent = "x" + vol.toFixed(1).replace(".", ",");
+  if (boostNode) boostNode.gain.setTargetAtTime(vol, boostNode.context.currentTime, 0.05);
+  else { const a = $("remoteAudio"); a.volume = Math.min(1, vol / 2.5); }
 }
+$("volRange").addEventListener("input", (e) => { vol = Number(e.target.value); store.set("vol", vol); updateVol(); });
 const dur = (ms) => { const s = Math.floor(ms / 1000); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
 function hangUp() { if (!call) return; send(call.id, { t: "call-end" }); endCall("Llamada terminada"); }
 function endCall(msg, remote) {
@@ -302,7 +301,7 @@ function endCall(msg, remote) {
   else if (!c.incoming && msg !== "Llamada terminada") addSystem(c.id, msg + " · " + fmtTime(Date.now()));
   try { c.media && c.media.close(); } catch {}
   try { c.stream && c.stream.getTracks().forEach((t) => t.stop()); } catch {}
-  stopBoost(); $("remoteAudio").srcObject = null; $("remoteAudio").muted = false;
+  stopBoost(); $("volBox").hidden = true; $("remoteAudio").srcObject = null; $("remoteAudio").muted = false;
   $("callState").textContent = msg || "Llamada terminada"; $("callIncoming").hidden = true; $("callActive").hidden = true;
   setTimeout(() => { if (!call) $("callView").hidden = true; }, remote ? 1400 : 900);
 }
@@ -402,7 +401,7 @@ $("btnNotif").onclick = async () => {
   const p = await Notification.requestPermission(); toast(p === "granted" ? "Avisos activados" : "Avisos no permitidos");
 };
 $("btnAccept").onclick = acceptCall; $("btnDecline").onclick = declineCall;
-$("btnHang").onclick = hangUp; $("btnSpk").onclick = cycleBoost; $("btnMute").onclick = toggleMute;
+$("btnHang").onclick = hangUp; $("btnMute").onclick = toggleMute;
 $("btnStart").onclick = () => {
   const name = $("inName").value.trim().slice(0, 40); if (!name) return toast("Escribe tu nombre");
   me = { id: newCode(), name }; store.set("me", me); boot();
