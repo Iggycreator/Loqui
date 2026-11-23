@@ -378,6 +378,28 @@ function addContact() {
   else if (name) { c.name = name; saveContacts(); }
   $("dlgAdd").hidden = true; connect(id); renderAll(); openChat(id);
 }
+// contact info: rename / delete (tap the name in the chat header)
+let delArmed = false;
+function openInfo() {
+  const c = contact(current); if (!c) return;
+  $("infoCode").textContent = c.id; $("infoName").value = c.name;
+  delArmed = false; $("btnDel").textContent = "Eliminar contacto y chat";
+  $("dlgInfo").hidden = false;
+}
+$("chatWho").onclick = openInfo;
+$("chatWho").onkeydown = (e) => { if (e.key === "Enter") openInfo(); };
+$("btnInfoSave").onclick = () => {
+  const c = contact(current); const n = $("infoName").value.trim().slice(0, 40);
+  if (c && n) { c.name = n; saveContacts(); renderAll(); }
+  $("dlgInfo").hidden = true;
+};
+$("btnDel").onclick = () => {
+  if (!delArmed) { delArmed = true; $("btnDel").textContent = "Toca otra vez para confirmar"; return; }
+  const id = current; $("dlgInfo").hidden = true;
+  dropConn(id); contacts = contacts.filter((c) => c.id !== id); saveContacts();
+  try { localStorage.removeItem("loqui.msgs." + id); } catch {}
+  closeChat(); toast("Contacto eliminado");
+};
 document.querySelectorAll("[data-close]").forEach((b) => (b.onclick = () => (b.closest(".veil").hidden = true)));
 document.querySelectorAll(".veil").forEach((v) => v.addEventListener("click", (e) => { if (e.target === v) v.hidden = true; }));
 
