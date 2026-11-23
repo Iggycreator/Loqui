@@ -95,7 +95,7 @@ function startPeer() {
     if (peer !== p) return;
     if (e.type === "peer-unavailable") {
       const m = /loqui-([a-z0-9]+)/i.exec(e.message || ""); if (m) { const id = m[1].toUpperCase(); if (!isOnline(id)) conns.delete(id); renderAll(); }
-      if (call && call.state === "calling") endCall("No contesta o no está conectado");
+      if (call && call.state === "calling") endCall("No está conectado (código " + call.id + ")");
     } else if (e.type === "unavailable-id") {
       // The server still remembers our previous (frozen) session; it frees the code shortly.
       idTakenTries++;
@@ -344,7 +344,7 @@ function renderChatHeader() {
   const st = $("chatStatus");
   if ((typingUntil.get(current) || 0) > Date.now()) { st.textContent = "escribiendo…"; st.className = "on"; }
   else if (isOnline(current)) { st.textContent = "en línea"; st.className = "on"; }
-  else { st.textContent = open ? "desconectado · se enviará al conectarse" : "sin conexión"; st.className = ""; }
+  else { st.textContent = open ? "no conectado · código " + current : "sin servidor · revisa internet"; st.className = ""; }
 }
 function renderMsgs() {
   const box = $("msgs"); const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
