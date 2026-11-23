@@ -120,7 +120,7 @@ header.bar{display:flex;align-items:center;gap:12px;padding:12px max(16px,env(sa
       <p>Mensajes y llamadas de voz por internet, directo entre teléfonos. Escribe tu nombre para empezar.</p>
       <div class="field"><label for="inName">Tu nombre</label><input id="inName" maxlength="40" autocomplete="name" placeholder="Ej. Iggy"></div>
       <button class="primary" id="btnStart">Empezar</button>
-      <div class="proto">Prototipo v3 · los mensajes se guardan solo en tu teléfono</div>
+      <div class="proto">Prototipo v4 · los mensajes se guardan solo en tu teléfono</div>
     </div>
   </section>
 
@@ -172,7 +172,7 @@ header.bar{display:flex;align-items:center;gap:12px;padding:12px max(16px,env(sa
     <div class="btns">
       <button class="primary" id="btnCopyLink">Copiar enlace</button>
       <button class="ghost" id="btnNotif">Activar avisos</button>
-      <div class="proto" id="verLbl" style="text-align:center;margin-top:10px">Loqui v3 · <span id="netLbl">…</span></div>
+      <div class="proto" id="verLbl" style="text-align:center;margin-top:10px">Loqui v4 · <span id="netLbl">…</span></div>
       <button class="ghost" data-close>Cerrar</button>
     </div>
     <p class="proto" style="text-align:left">Para recibir mensajes y llamadas, Loqui debe estar abierto. Los mensajes se guardan solo en este teléfono.</p>
@@ -193,6 +193,7 @@ header.bar{display:flex;align-items:center;gap:12px;padding:12px max(16px,env(sa
     </div>
     <div class="callbtns" id="callActive" hidden>
       <div><button class="cb" id="btnMute" aria-label="Silenciar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><div class="cbl" id="muteLbl">Silenciar</div></div>
+      <div><button class="cb" id="btnSpk" aria-label="Volumen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg></button><div class="cbl" id="spkLbl">Volumen x2</div></div>
       <div><button class="cb red" id="btnHang" aria-label="Colgar"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 9c-3.3 0-6.3.9-8.5 2.6a1.6 1.6 0 0 0-.1 2.3l1.6 1.6c.5.5 1.4.6 2 .1l1.8-1.4c.4-.3.6-.8.6-1.3V11c1.6-.4 3.6-.4 5.2 0v1.9c0 .5.2 1 .6 1.3l1.8 1.4c.6.5 1.5.4 2-.1l1.6-1.6a1.6 1.6 0 0 0-.1-2.3C18.3 9.9 15.3 9 12 9z"/></svg></button><div class="cbl">Colgar</div></div>
     </div>
   </div>
