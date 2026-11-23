@@ -73,35 +73,89 @@ const conns = new Map();          // contactId -> DataConnection
 const typingUntil = new Map();
 let current = null;               // contact id open in chat
 
+// Keeps the link alive: phones (iPhone above all) freeze the app in the background and
+// connections die silently, so we ping every few seconds, drop links that went quiet,
+// rebuild the peer when the server link is lost, and redial everyone on return.
+const lastSeen = new Map();       // contactId -> ms of last data received
+const dialing = new Map();        // contactId -> ms of last dial attempt
+const PING_MS = 4000, DEAD_MS = 12000;
+let reviveT = null, idTakenTries = 0;
+
 function startPeer() {
-  if (peer) return;
-  peer = new Peer(PREFIX + me.id.toLowerCase(), { debug: 0 });
-  peer.on("open", () => { open = true; renderAll(); contacts.forEach((c) => connect(c.id)); });
-  peer.on("connection", (conn) => setupConn(conn));
-  peer.on("call", onIncomingCall);
-  peer.on("disconnected", () => { open = false; renderAll(); setTimeout(() => { try { peer.reconnect(); } catch {} }, 2500); });
-  peer.on("error", (e) => {
+  if (peer && !peer.destroyed) return;
+  open = false;
+  const p = new Peer(PREFIX + me.id.toLowerCase(), { debug: 0 });
+  peer = p;
+  p.on("open", () => { if (peer !== p) return; open = true; idTakenTries = 0; renderAll(); redialAll(true); });
+  p.on("connection", (conn) => setupConn(conn));
+  p.on("call", onIncomingCall);
+  p.on("disconnected", () => { if (peer !== p) return; open = false; renderAll(); scheduleRevive(1500); });
+  p.on("close", () => { if (peer !== p) return; open = false; renderAll(); scheduleRevive(2000); });
+  p.on("error", (e) => {
+    if (peer !== p) return;
     if (e.type === "peer-unavailable") {
-      const m = /loqui-([a-z0-9]+)/i.exec(e.message || ""); if (m) { conns.delete(m[1].toUpperCase()); renderAll(); }
+      const m = /loqui-([a-z0-9]+)/i.exec(e.message || ""); if (m) { const id = m[1].toUpperCase(); if (!isOnline(id)) conns.delete(id); renderAll(); }
       if (call && call.state === "calling") endCall("No contesta o no está conectado");
     } else if (e.type === "unavailable-id") {
-      toast("Loqui ya está abierto en otra pestaña o dispositivo con tu código");
-    } else if (e.type === "network" || e.type === "server-error" || e.type === "socket-error") {
-      open = false; renderAll();
+      // The server still remembers our previous (frozen) session; it frees the code shortly.
+      idTakenTries++;
+      if (idTakenTries === 6) toast("Loqui parece abierto en otra pestaña o dispositivo con tu código");
+      try { p.destroy(); } catch {}
+      scheduleRevive(Math.min(15000, 2500 * idTakenTries));
+    } else if (["network", "server-error", "socket-error", "socket-closed", "disconnected"].includes(e.type)) {
+      open = false; renderAll(); scheduleRevive(2500);
     }
   });
-  setInterval(() => { if (open) contacts.forEach((c) => { if (!isOnline(c.id)) connect(c.id); }); }, 20000);
+}
+function scheduleRevive(ms) { clearTimeout(reviveT); reviveT = setTimeout(revive, ms); }
+function revive() {
+  if (!me) return;
+  if (!peer || peer.destroyed) { peer = null; startPeer(); return; }
+  if (peer.disconnected) { try { peer.reconnect(); } catch { try { peer.destroy(); } catch {} peer = null; startPeer(); } }
 }
 const isOnline = (id) => { const c = conns.get(id); return !!(c && c.open); };
+function dropConn(id) { const c = conns.get(id); conns.delete(id); lastSeen.delete(id); try { c && c.close(); } catch {} }
+function redialAll(force) { contacts.forEach((c) => connect(c.id, force)); }
 
-function connect(id) {
-  if (!open || isOnline(id) || id === me.id) return;
-  try { setupConn(peer.connect(PREFIX + id.toLowerCase(), { reliable: true, metadata: { name: me.name } })); } catch {}
+function connect(id, force) {
+  if (!open || !peer || id === me.id || isOnline(id)) return;
+  const t = dialing.get(id) || 0; if (!force && Date.now() - t < 7000) return;   // don't pile up dials
+  dialing.set(id, Date.now());
+  try { const c = peer.connect(PREFIX + id.toLowerCase(), { reliable: true, metadata: { name: me.name } }); c._mine = true; setupConn(c); } catch {}
 }
+// heartbeat + health check
+setInterval(() => {
+  if (!me) return;
+  if (!peer || peer.destroyed || peer.disconnected) revive();
+  const now = Date.now();
+  for (const [id] of conns) {
+    if (now - (lastSeen.get(id) || now) > DEAD_MS) { dropConn(id); renderAll(); continue; }
+    send(id, { t: "ping" });
+  }
+  if (open) contacts.forEach((c) => { if (!isOnline(c.id)) connect(c.id); });
+}, PING_MS);
+function onResume() {
+  if (!me) return;
+  revive();
+  const now = Date.now();
+  for (const [id] of conns) if (now - (lastSeen.get(id) || 0) > PING_MS * 2) dropConn(id);
+  renderAll(); redialAll(true);
+}
+window.addEventListener("online", onResume);
+window.addEventListener("pageshow", onResume);
+
 function setupConn(conn) {
   const id = conn.peer.replace(PREFIX, "").toUpperCase();
   conn.on("open", () => {
-    conns.set(id, conn);
+    const old = conns.get(id);
+    if (old && old !== conn && old.open) {
+      // Both phones dialed at once: both sides keep the link started by the smaller code.
+      const keeper = me.id < id ? me.id : id;
+      const initiator = (c) => (c._mine ? me.id : id);
+      if (initiator(old) === keeper) { setTimeout(() => { try { conn.close(); } catch {} }, 1500); return; }
+      setTimeout(() => { try { old.close(); } catch {} }, 1500);
+    }
+    conns.set(id, conn); lastSeen.set(id, Date.now());
     if (!contact(id)) { contacts.push({ id, name: conn.metadata?.name || id, unread: 0, last: "", ts: Date.now() }); saveContacts(); toast((conn.metadata?.name || id) + " te agregó"); }
     conn.send({ t: "hello", name: me.name });
     flush(id); renderAll();
@@ -118,6 +172,8 @@ function flush(id) {
 }
 function onData(id, d) {
   if (!d || typeof d !== "object") return;
+  lastSeen.set(id, Date.now());
+  if (d.t === "ping") return;
   const c = contact(id);
   if (d.t === "hello" && c && typeof d.name === "string") { c.name = d.name.slice(0, 40); saveContacts(); renderAll(); }
   else if (d.t === "msg" && typeof d.text === "string") {
@@ -324,7 +380,7 @@ $("btnStart").onclick = () => {
 };
 $("inName").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btnStart").click(); });
 window.addEventListener("hashchange", handleHash);
-document.addEventListener("visibilitychange", () => { if (!document.hidden && current) { const c = contact(current); if (c) { c.unread = 0; saveContacts(); } } if (!document.hidden && peer && peer.disconnected) try { peer.reconnect(); } catch {} });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && current) { const c = contact(current); if (c) { c.unread = 0; saveContacts(); } } if (!document.hidden) onResume(); });
 
 function handleHash() {
   const h = location.hash.slice(1); if (!h || !me) return;
