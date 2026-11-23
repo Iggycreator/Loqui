@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<title>Loqui</title>
+<meta name="description" content="Loqui – mensajes y llamadas de voz (prototipo)">
+<meta name="theme-color" content="#FF6B35">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Loqui: one-column messenger, ember accent on warm paper / deep slate */
+:root{
+  --bg:#FBF7F2; --panel:#FFFFFF; --ink:#1D1A22; --muted:#6F6976; --line:#ECE5DD;
+  --accent:#FF6B35; --accent-ink:#FFFFFF; --mine:#FFE3D6; --theirs:#FFFFFF; --ok:#1FA971; --bad:#E5484D;
+  --display:"Manrope",system-ui,sans-serif; --body:"Inter",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#15131A; --panel:#1E1B24; --ink:#F1ECE6; --muted:#A39BAA; --line:#2C2833;
+  --mine:#5A2A17; --theirs:#262230; color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 var(--body);-webkit-tap-highlight-color:transparent;overscroll-behavior:none}
+button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
+input,textarea{font:inherit;color:inherit}
+.app{height:100dvh;display:flex;flex-direction:column;max-width:720px;margin:0 auto;background:var(--bg);
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+.screen{flex:1;display:flex;flex-direction:column;min-height:0}
+[hidden]{display:none!important}
+header.bar{display:flex;align-items:center;gap:12px;padding:12px max(16px,env(safe-area-inset-left,0px)) 12px max(16px,env(safe-area-inset-right,0px));border-bottom:1px solid var(--line);background:var(--panel)}
+.brand{font:800 24px/1 var(--display);letter-spacing:-.5px;display:flex;align-items:center;gap:8px}
+.brand img{width:30px;height:30px;border-radius:8px}
+.spacer{flex:1}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:var(--bg);border:1px solid var(--line);font:600 13px var(--body);letter-spacing:.5px}
+.iconbtn{width:40px;height:40px;border-radius:12px;display:grid;place-items:center}
+.iconbtn:hover{background:var(--bg)}
+.iconbtn svg{width:22px;height:22px}
+/* onboarding */
+.onboard{flex:1;display:flex;flex-direction:column;justify-content:center;gap:20px;padding:24px max(24px,env(safe-area-inset-left,0px))}
+.onboard h1{font:800 44px/1 var(--display);margin:0;letter-spacing:-1px}
+.onboard p{color:var(--muted);margin:0;max-width:34ch}
+.field{display:flex;flex-direction:column;gap:6px}
+.field label{font:600 12px var(--body);text-transform:uppercase;letter-spacing:.8px;color:var(--muted)}
+.field input{padding:14px 16px;border-radius:14px;border:1px solid var(--line);background:var(--panel);font-size:17px;outline:none}
+.field input:focus{border-color:var(--accent)}
+.primary{background:var(--accent);color:var(--accent-ink);padding:14px 20px;border-radius:14px;font:700 16px var(--display)}
+.primary:disabled{opacity:.5}
+.ghost{padding:12px 16px;border-radius:12px;border:1px solid var(--line);background:var(--panel);font-weight:600}
+/* contacts */
+.list{flex:1;overflow:auto}
+.row{display:flex;align-items:center;gap:12px;padding:12px max(16px,env(safe-area-inset-left,0px));border-bottom:1px solid var(--line);width:100%;text-align:left}
+.row:hover{background:var(--panel)}
+.av{width:48px;height:48px;border-radius:50%;display:grid;place-items:center;font:800 18px var(--display);color:#fff;flex:none;position:relative}
+.av .dot{position:absolute;right:0;bottom:0;width:13px;height:13px;border-radius:50%;border:2px solid var(--bg);background:var(--muted)}
+.av .dot.on{background:var(--ok)}
+.rowmain{flex:1;min-width:0}
+.rowtop{display:flex;gap:8px;align-items:baseline}
+.rowname{font:700 16px var(--display);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rowtime{font-size:12px;color:var(--muted)}
+.rowlast{color:var(--muted);font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badge{background:var(--accent);color:#fff;border-radius:999px;font:700 12px var(--body);padding:2px 8px}
+.empty{padding:40px 24px;display:flex;flex-direction:column;gap:14px;align-items:flex-start}
+.empty h2{font:800 22px var(--display);margin:0}
+.empty p{margin:0;color:var(--muted);max-width:40ch}
+.fab{position:fixed;right:max(20px,calc(env(safe-area-inset-right,0px) + 20px));bottom:calc(env(safe-area-inset-bottom,0px) + 20px);width:60px;height:60px;border-radius:20px;background:var(--accent);color:#fff;display:grid;place-items:center;box-shadow:0 8px 24px rgba(255,107,53,.35)}
+.fab svg{width:28px;height:28px}
+/* chat */
+.who{flex:1;min-width:0}
+.who b{display:block;font:700 17px var(--display);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.who small{color:var(--muted)}
+.who small.on{color:var(--ok)}
+.msgs{flex:1;overflow:auto;padding:16px max(12px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:6px}
+.b{max-width:78%;padding:8px 12px 6px;border-radius:16px;background:var(--theirs);border:1px solid var(--line);align-self:flex-start;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere}
+.b.me{align-self:flex-end;background:var(--mine);border-color:transparent}
+.b .meta{display:block;text-align:right;font-size:11px;color:var(--muted);margin-top:2px}
+.sys{align-self:center;font-size:12px;color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:4px 12px}
+.day{align-self:center;font:600 11px var(--body);letter-spacing:.8px;text-transform:uppercase;color:var(--muted);margin:8px 0}
+.composer{display:flex;gap:8px;align-items:flex-end;padding:10px max(12px,env(safe-area-inset-left,0px));border-top:1px solid var(--line);background:var(--panel)}
+.composer textarea{flex:1;resize:none;max-height:140px;min-height:44px;padding:11px 14px;border-radius:22px;border:1px solid var(--line);background:var(--bg);outline:none}
+.send{width:44px;height:44px;border-radius:50%;background:var(--accent);color:#fff;display:grid;place-items:center;flex:none}
+.send svg{width:20px;height:20px}
+/* sheets / dialogs */
+.veil{position:fixed;inset:0;background:rgba(10,8,14,.45);display:flex;align-items:flex-end;justify-content:center;z-index:20}
+.sheet{background:var(--panel);width:100%;max-width:720px;border-radius:22px 22px 0 0;padding:22px max(20px,env(safe-area-inset-left,0px)) calc(22px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:14px}
+.sheet h3{margin:0;font:800 20px var(--display)}
+.sheet p{margin:0;color:var(--muted)}
+.code{font:800 34px/1 var(--display);letter-spacing:4px}
+.btns{display:flex;gap:10px;flex-wrap:wrap}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 90px);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:12px;font-weight:600;z-index:40;max-width:90vw}
+/* call */
+.call{position:fixed;inset:0;z-index:30;background:linear-gradient(170deg,#2A1A2E,#15131A 60%);color:#F7F1EA;display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:calc(env(safe-area-inset-top,0px) + 60px) 24px calc(env(safe-area-inset-bottom,0px) + 50px)}
+.call .av{width:120px;height:120px;font-size:44px}
+.call .ring{animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,107,53,.5)}50%{box-shadow:0 0 0 28px rgba(255,107,53,0)}}
+@media (prefers-reduced-motion:reduce){.call .ring{animation:none}}
+.call h2{font:800 30px var(--display);margin:18px 0 4px;text-align:center}
+.call .st{opacity:.75;font-variant-numeric:tabular-nums}
+.callbtns{display:flex;gap:28px}
+.cb{width:70px;height:70px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.12);color:#fff}
+.cb svg{width:28px;height:28px}
+.cb.red{background:var(--bad)} .cb.green{background:var(--ok)} .cb.on{background:#fff;color:#15131A}
+.cbl{text-align:center;font-size:12px;opacity:.8;margin-top:6px}
+.proto{font-size:11px;color:var(--muted);text-align:center;padding:6px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- onboarding -->
+  <section class="screen" id="sOnboard" hidden>
+    <div class="onboard">
+      <div class="brand"><img src="icon-192.png" alt=""> Loqui</div>
+      <h1>Habla con quien quieras, en cualquier país.</h1>
+      <p>Mensajes y llamadas de voz por internet, directo entre teléfonos. Escribe tu nombre para empezar.</p>
+      <div class="field"><label for="inName">Tu nombre</label><input id="inName" maxlength="40" autocomplete="name" placeholder="Ej. Iggy"></div>
+      <button class="primary" id="btnStart">Empezar</button>
+      <div class="proto">Prototipo · los mensajes se guardan solo en tu teléfono</div>
+    </div>
+  </section>
+
+  <!-- contacts -->
+  <section class="screen" id="sHome" hidden>
+    <header class="bar">
+      <div class="brand"><img src="icon-192.png" alt=""> Loqui</div>
+      <div class="spacer"></div>
+      <button class="chip" id="btnMyCode" title="Tu código">Tu código <b id="myCode">—</b></button>
+    </header>
+    <div class="list" id="contactList"></div>
+    <button class="fab" id="btnAdd" aria-label="Agregar contacto"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+  </section>
+
+  <!-- chat -->
+  <section class="screen" id="sChat" hidden>
+    <header class="bar">
+      <button class="iconbtn" id="btnBack" aria-label="Volver"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <div class="av" id="chatAv"></div>
+      <div class="who"><b id="chatName"></b><small id="chatStatus">desconectado</small></div>
+      <button class="iconbtn" id="btnCall" aria-label="Llamar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/></svg></button>
+    </header>
+    <div class="msgs" id="msgs"></div>
+    <div class="composer">
+      <textarea id="inMsg" rows="1" placeholder="Escribe un mensaje" aria-label="Mensaje"></textarea>
+      <button class="send" id="btnSend" aria-label="Enviar"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12 2-12 2z"/></svg></button>
+    </div>
+  </section>
+</div>
+
+<!-- add contact -->
+<div class="veil" id="dlgAdd" hidden>
+  <div class="sheet" role="dialog" aria-labelledby="addTitle">
+    <h3 id="addTitle">Agregar contacto</h3>
+    <p>Pide a la otra persona su código de Loqui (aparece arriba en su pantalla) o que te mande su enlace.</p>
+    <div class="field"><label for="inCode">Código</label><input id="inCode" maxlength="8" placeholder="Ej. K7Q2MX" autocapitalize="characters"></div>
+    <div class="field"><label for="inCName">Nombre (opcional)</label><input id="inCName" maxlength="40" placeholder="Cómo quieres verlo"></div>
+    <div class="btns"><button class="primary" id="btnAddOk">Agregar</button><button class="ghost" data-close>Cancelar</button></div>
+  </div>
+</div>
+
+<!-- my code -->
+<div class="veil" id="dlgCode" hidden>
+  <div class="sheet" role="dialog" aria-labelledby="codeTitle">
+    <h3 id="codeTitle">Tu código de Loqui</h3>
+    <div class="code" id="bigCode"></div>
+    <p>Compártelo para que te agreguen. También puedes mandar este enlace:</p>
+    <input class="chip" id="myLink" readonly style="width:100%;padding:10px 12px">
+    <div class="btns">
+      <button class="primary" id="btnCopyLink">Copiar enlace</button>
+      <button class="ghost" id="btnNotif">Activar avisos</button>
+      <button class="ghost" data-close>Cerrar</button>
+    </div>
+    <p class="proto" style="text-align:left">Para recibir mensajes y llamadas, Loqui debe estar abierto. Los mensajes se guardan solo en este teléfono.</p>
+  </div>
+</div>
+
+<!-- call -->
+<div class="call" id="callView" hidden>
+  <div style="display:flex;flex-direction:column;align-items:center">
+    <div class="av ring" id="callAv"></div>
+    <h2 id="callName"></h2>
+    <div class="st" id="callState"></div>
+  </div>
+  <div>
+    <div class="callbtns" id="callIncoming" hidden>
+      <div><button class="cb red" id="btnDecline" aria-label="Rechazar"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 9c-3.3 0-6.3.9-8.5 2.6a1.6 1.6 0 0 0-.1 2.3l1.6 1.6c.5.5 1.4.6 2 .1l1.8-1.4c.4-.3.6-.8.6-1.3V11c1.6-.4 3.6-.4 5.2 0v1.9c0 .5.2 1 .6 1.3l1.8 1.4c.6.5 1.5.4 2-.1l1.6-1.6a1.6 1.6 0 0 0-.1-2.3C18.3 9.9 15.3 9 12 9z"/></svg></button><div class="cbl">Rechazar</div></div>
+      <div><button class="cb green" id="btnAccept" aria-label="Contestar"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6.6 10.8a15 15 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1z"/></svg></button><div class="cbl">Contestar</div></div>
+    </div>
+    <div class="callbtns" id="callActive" hidden>
+      <div><button class="cb" id="btnMute" aria-label="Silenciar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><div class="cbl" id="muteLbl">Silenciar</div></div>
+      <div><button class="cb red" id="btnHang" aria-label="Colgar"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 9c-3.3 0-6.3.9-8.5 2.6a1.6 1.6 0 0 0-.1 2.3l1.6 1.6c.5.5 1.4.6 2 .1l1.8-1.4c.4-.3.6-.8.6-1.3V11c1.6-.4 3.6-.4 5.2 0v1.9c0 .5.2 1 .6 1.3l1.8 1.4c.6.5 1.5.4 2-.1l1.6-1.6a1.6 1.6 0 0 0-.1-2.3C18.3 9.9 15.3 9 12 9z"/></svg></button><div class="cbl">Colgar</div></div>
+    </div>
+  </div>
+</div>
+<audio id="remoteAudio" autoplay playsinline></audio>
+<div class="toast" id="toast" hidden></div>
+
+<script src="peerjs.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
