@@ -80,11 +80,22 @@ const lastSeen = new Map();       // contactId -> ms of last data received
 const dialing = new Map();        // contactId -> ms of last dial attempt
 const PING_MS = 4000, DEAD_MS = 12000;
 let reviveT = null, idTakenTries = 0;
+// Relay (TURN) servers from Metered: when two phones can't reach each other directly
+// (mobile carriers, strict Wi-Fi), audio and data travel through these.
+const TURN_USER = "bdaa4d3f001c60b5b8c4c341", TURN_PASS = "AWrOigQGUr+EPwFV";
+const ICE_SERVERS = [
+  { urls: "stun:stun.relay.metered.ca:80" },
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "turn:global.relay.metered.ca:80", username: TURN_USER, credential: TURN_PASS },
+  { urls: "turn:global.relay.metered.ca:80?transport=tcp", username: TURN_USER, credential: TURN_PASS },
+  { urls: "turn:global.relay.metered.ca:443", username: TURN_USER, credential: TURN_PASS },
+  { urls: "turns:global.relay.metered.ca:443?transport=tcp", username: TURN_USER, credential: TURN_PASS },
+];
 
 function startPeer() {
   if (peer && !peer.destroyed) return;
   open = false;
-  const p = new Peer(PREFIX + me.id.toLowerCase(), { debug: 0 });
+  const p = new Peer(PREFIX + me.id.toLowerCase(), { debug: 0, config: { iceServers: ICE_SERVERS } });
   peer = p;
   p.on("open", () => { if (peer !== p) return; open = true; idTakenTries = 0; renderAll(); redialAll(true); });
   p.on("connection", (conn) => setupConn(conn));
@@ -464,6 +475,10 @@ async function startCall(id) {
 }
 function onIncomingCall(media) {
   const id = media.peer.replace(PREFIX, "").toUpperCase();
+  if (call && call.reconnecting && call.id === id) {          // same call coming back after a drop
+    call.media = media; media.answer(call.stream); wireMedia(media); return;
+  }
+  if (media.metadata && media.metadata.reconnect) { media.close(); return; }   // that call already ended here
   if (call) { media.close(); return; }      // busy
   if (!contact(id)) { contacts.push({ id, name: media.metadata?.name || id, unread: 0, last: "", ts: Date.now() }); saveContacts(); renderAll(); }
   call = { id, media, state: "ringing", muted: false, incoming: true };
@@ -483,15 +498,52 @@ function declineCall() { if (!call) return; send(call.id, { t: "call-decline" })
 function wireMedia(media) {
   media.on("stream", (remote) => {
     playRemote(remote);
-    if (!call || call.state === "connected") return;
+    if (!call) return;
+    if (call.reconnecting) { stopReconnect(); toast("Llamada reconectada"); return; }
+    if (call.state === "connected") return;
     clearTimeout(call.timeout); ring(false);
     call.state = "connected"; call.start = Date.now();
     callUI(call.id, "00:00", false);
-    call.timer = setInterval(() => { if (call) $("callState").textContent = dur(Date.now() - call.start); }, 1000);
+    call.timer = setInterval(() => { if (call) $("callState").textContent = call.reconnecting || call.weak ? "Reconectando…" : dur(Date.now() - call.start); }, 1000);
   });
-  media.on("close", () => { if (call && call.media === media) endCall("Llamada terminada"); });
-  media.on("error", () => { if (call && call.media === media) endCall("Se cortó la llamada"); });
+  media.on("close", () => { if (call && call.media === media) dropped("Llamada terminada"); });
+  media.on("error", () => { if (call && call.media === media) dropped("Se cortó la llamada"); });
+  // watch the network path: brief "disconnected" usually heals by itself; "failed" means rebuild
+  const watch = () => {
+    const pc = media.peerConnection; if (!pc) return setTimeout(watch, 300);
+    pc.addEventListener("iceconnectionstatechange", () => {
+      if (!call || call.media !== media) return;
+      const st = pc.iceConnectionState;
+      if (st === "disconnected") call.weak = true;
+      else if (st === "connected" || st === "completed") call.weak = false;
+      else if (st === "failed") dropped("Se cortó la llamada");
+    });
+  };
+  watch();
 }
+// A connected call that drops (network change, weak signal) is rebuilt automatically for
+// up to 25 s. Both phones keep the call screen; the one with the smaller code redials.
+function dropped(msg) {
+  if (!call) return;
+  if (call.state !== "connected") return endCall(msg);
+  if (call.reconnecting) return;
+  const c = call; c.reconnecting = true; c.weak = false;
+  try { c.media && c.media.close(); } catch {}
+  c.media = null; $("callState").textContent = "Reconectando…";
+  c.giveUp = setTimeout(() => { if (call === c && c.reconnecting) endCall("Se cortó la llamada"); }, 25000);
+  const iRedial = me.id < c.id;
+  const tryCall = () => {
+    if (call !== c || !c.reconnecting) return;
+    if (iRedial && open && !c.media) {
+      try { const m = peer.call(PREFIX + c.id.toLowerCase(), c.stream, { metadata: { name: me.name, reconnect: true } }); c.media = m; wireMedia(m);
+        setTimeout(() => { if (call === c && c.reconnecting && c.media === m) { try { m.close(); } catch {} c.media = null; } }, 6000); } catch {}
+    }
+    c.retry = setTimeout(tryCall, 4000);
+  };
+  c.retry = setTimeout(tryCall, 1200);   // give an explicit "colgó" message time to arrive first
+  connect(c.id, true);
+}
+function stopReconnect() { if (!call) return; call.reconnecting = false; call.weak = false; clearTimeout(call.giveUp); clearTimeout(call.retry); }
 // Remote voice goes through a gain + limiter so it is clearly louder than the phone's
 // default call level, without distorting. The <audio> element stays attached (muted)
 // because some browsers only deliver WebRTC audio to Web Audio while it is playing.
@@ -525,7 +577,7 @@ function hangUp() { if (!call) return; send(call.id, { t: "call-end" }); endCall
 function endCall(msg, remote) {
   if (!call) return;
   const c = call; call = null;
-  ring(false); clearTimeout(c.timeout); clearInterval(c.timer);
+  ring(false); clearTimeout(c.timeout); clearInterval(c.timer); clearTimeout(c.giveUp); clearTimeout(c.retry);
   if (c.start) addSystem(c.id, "Llamada de voz · " + dur(Date.now() - c.start));
   else if (!c.incoming && msg !== "Llamada terminada") addSystem(c.id, msg + " · " + fmtTime(Date.now()));
   try { c.media && c.media.close(); } catch {}
