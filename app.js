@@ -232,7 +232,7 @@ function forgetMedia(mid) {
   idb.del(mid).catch(() => {});
 }
 const fmtDur = (sec) => { sec = Math.max(0, Math.round(sec || 0)); return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0"); };
-const preview = (m) => m.kind === "img" ? "📷 Foto" : m.kind === "audio" ? "🎤 Nota de voz " + fmtDur(m.dur) : (m.text || "");
+const preview = (m) => m.kind === "img" ? "📷 Foto" : m.kind === "audio" ? (m.ptt ? "📻 Walkie " : "🎤 Nota de voz ") + fmtDur(m.dur) : (m.text || "");
 
 async function sendMedia(kind, blob, extra) {
   const id = current; if (!id || !blob) return;
@@ -248,7 +248,7 @@ async function pushMedia(id, m) {
   if (!isOnline(id)) return false;
   const rec = await idb.get(m.mid).catch(() => null); if (!rec) return false;
   const data = await rec.blob.arrayBuffer();
-  return send(id, { t: "media", mid: m.mid, kind: m.kind, mime: m.mime, dur: m.dur || 0, w: m.w || 0, h: m.h || 0, ts: m.ts, data });
+  return send(id, { t: "media", mid: m.mid, kind: m.kind, mime: m.mime, dur: m.dur || 0, w: m.w || 0, h: m.h || 0, ptt: !!m.ptt, ts: m.ts, data });
 }
 function setStatus(id, mid, st) {
   const list = msgsOf(id); const m = list.find((x) => x.mid === mid);
@@ -263,12 +263,13 @@ async function onMedia(id, d) {
     try { await idb.put(d.mid, { blob, cid: id }); } catch { return; }
     const list = msgsOf(id);
     if (!list.some((m) => m.mid === d.mid)) {
-      const m = { mid: d.mid, from: "them", kind: d.kind, mime: String(d.mime || "").slice(0, 60), dur: Math.min(600, +d.dur || 0), w: +d.w || 0, h: +d.h || 0, ts: Date.now() };
+      const m = { mid: d.mid, from: "them", kind: d.kind, mime: String(d.mime || "").slice(0, 60), dur: Math.min(600, +d.dur || 0), w: +d.w || 0, h: +d.h || 0, ptt: d.ptt === true && d.kind === "audio", ts: Date.now() };
       list.push(m); saveMsgs(id, list);
       const c = contact(id);
       if (c) { c.last = preview(m); c.ts = m.ts; if (current !== id || document.hidden) c.unread = (c.unread || 0) + 1; saveContacts(); }
       if (current === id) renderMsgs(); renderAll();
-      if (current !== id || document.hidden) { ping(); notify(c ? c.name : "Loqui", preview(m)); }
+      if (m.ptt && current === id && !document.hidden) pttEnqueue(m.mid);
+      else if (current !== id || document.hidden) { ping(); notify(c ? c.name : "Loqui", (m.ptt ? "📻 " : "") + preview(m)); }
     }
   }
   send(id, { t: "ack", mid: d.mid });
@@ -298,32 +299,38 @@ $("viewer").onclick = () => { $("viewer").hidden = true; $("viewerImg").removeAt
 // voice notes
 const AUDIO_TYPES = ["audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/aac", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
 let rec = null, recTimer = null;
-async function startRec() {
+async function startRec(opts = {}) {
   if (rec || call || !current) return;
   if (!window.MediaRecorder) return toast("Este teléfono no permite grabar audio aquí");
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
-  catch { return toast("Permite el micrófono para grabar notas de voz"); }
+  catch { if (opts.ptt) pttUI("idle"); return toast("Permite el micrófono para grabar notas de voz"); }
+  if (opts.ptt && !pttHeld) { stream.getTracks().forEach((t) => t.stop()); pttUI("idle"); return; }   // released before the mic opened
   const type = AUDIO_TYPES.find((t) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
   let mr; try { mr = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 48000 } : undefined); }
   catch { mr = new MediaRecorder(stream); }
-  const r = { mr, stream, chunks: [], start: Date.now(), cancel: false, cid: current };
+  const r = { mr, stream, chunks: [], start: Date.now(), cancel: false, cid: current, ptt: !!opts.ptt };
   rec = r;
   mr.ondataavailable = (e) => { if (e.data && e.data.size) r.chunks.push(e.data); };
   mr.onstop = async () => {
     r.stream.getTracks().forEach((t) => t.stop());
-    clearInterval(recTimer); rec = null; $("recBar").hidden = true; $("composer").hidden = false;
+    clearInterval(recTimer); rec = null;
+    if (r.ptt) { pttUI("idle"); beep(660, 0.07, 0, 0.08); } else { $("recBar").hidden = true; showComposer(); }
     const dur = (Date.now() - r.start) / 1000;
     if (r.cancel) return;
-    if (dur < 0.8) return toast("Nota muy corta");
+    if (dur < (r.ptt ? 0.5 : 0.8)) { pttQueueNext(); return toast(r.ptt ? "Mantén presionado mientras hablas" : "Nota muy corta"); }
     const blob = new Blob(r.chunks, { type: (mr.mimeType || type || "audio/webm").split(";")[0] });
-    if (current === r.cid) await sendMedia("audio", blob, { dur });
+    if (current === r.cid) await sendMedia("audio", blob, r.ptt ? { dur, ptt: true } : { dur });
+    pttQueueNext();
   };
   mr.start(250);
-  $("composer").hidden = true; $("recBar").hidden = false; $("recTime").textContent = "0:00";
+  if (r.ptt) { pttUI("talk"); beep(990, 0.06, 0, 0.08); }
+  else { $("composer").hidden = true; $("recBar").hidden = false; $("recTime").textContent = "0:00"; }
   recTimer = setInterval(() => {
-    const sec = (Date.now() - r.start) / 1000; $("recTime").textContent = fmtDur(Math.floor(sec));
-    if (sec >= 180) stopRec(false);
+    const sec = (Date.now() - r.start) / 1000;
+    if (r.ptt) $("pttLbl").textContent = "Hablando… " + fmtDur(Math.floor(sec)) + " · suelta para enviar";
+    else $("recTime").textContent = fmtDur(Math.floor(sec));
+    if (sec >= (r.ptt ? 60 : 180)) stopRec(false);
   }, 250);
   if (navigator.vibrate) navigator.vibrate(30);
 }
@@ -347,21 +354,66 @@ function voiceBubble(m) {
     t.textContent = a && a.currentTime > 0 ? fmtDur(a.currentTime) : fmtDur(m.dur);
   };
   wrap._paint = paint; wrap.dataset.vn = m.mid; paint();
-  btn.onclick = async () => {
-    let a = players.get(m.mid);
-    if (!a) {
-      const u = await mediaUrl(m.mid); if (!u) return toast("Audio no disponible");
-      a = new Audio(u); a.preload = "auto"; players.set(m.mid, a);
-      const repaint = () => document.querySelectorAll(".vn").forEach((el) => { if (el.dataset.vn === m.mid && el._paint) el._paint(); });
-      a.ontimeupdate = repaint; a.onplay = repaint; a.onpause = repaint;
-      a.onended = () => { a.currentTime = 0; repaint(); };
-      a.onerror = () => toast("Este teléfono no puede reproducir ese formato de audio");
-    }
-    if (a.paused) { players.forEach((o) => { if (o !== a) o.pause(); }); a.play().catch(() => toast("No se pudo reproducir")); }
-    else a.pause();
-  };
+  btn.onclick = () => { const a = players.get(m.mid); if (a && !a.paused) a.pause(); else playVoice(m.mid); };
   return wrap;
 }
+async function playVoice(mid, onDone) {
+  let a = players.get(mid);
+  if (!a) {
+    const u = await mediaUrl(mid); if (!u) { toast("Audio no disponible"); return false; }
+    a = new Audio(u); a.preload = "auto"; a.playsInline = true; players.set(mid, a);
+    const repaint = () => document.querySelectorAll(".vn").forEach((el) => { if (el.dataset.vn === mid && el._paint) el._paint(); });
+    a.ontimeupdate = repaint; a.onplay = repaint; a.onpause = repaint;
+    a.addEventListener("ended", () => { a.currentTime = 0; repaint(); });
+    a.onerror = () => toast("Este teléfono no puede reproducir ese formato de audio");
+  }
+  players.forEach((o) => { if (o !== a) o.pause(); });
+  if (onDone) { const fin = () => { a.removeEventListener("ended", fin); a.removeEventListener("pause", fin); onDone(); }; a.addEventListener("ended", fin); a.addEventListener("pause", fin); }
+  try { await a.play(); return true; } catch { if (onDone) onDone(); return false; }
+}
+
+// ---------------------------------------------------------------- walkie-talkie
+// Hold the big button to talk, release to send. Incoming walkie messages play by themselves
+// (with a radio beep) when that chat is open, one after another.
+let pttHeld = false, pttBusy = false;
+const pttQueue = [];
+function pttUI(state) {
+  const b = $("btnPtt"); b.classList.toggle("on", state === "talk"); b.classList.toggle("wait", state === "wait");
+  $("pttLbl").textContent = state === "talk" ? "Hablando… · suelta para enviar" : state === "wait" ? "Abriendo micrófono…" : state === "listen" ? "Escuchando…" : "Mantén presionado para hablar";
+}
+function pttEnqueue(mid) { if (!pttQueue.includes(mid)) pttQueue.push(mid); pttQueueNext(); }
+function pttQueueNext() {
+  if (pttBusy || rec || call || !pttQueue.length) return;
+  const mid = pttQueue.shift(); pttBusy = true; pttUI("listen");
+  beep(1320, 0.05, 0, 0.07); beep(1760, 0.05, 0.07, 0.07);
+  setTimeout(() => playVoice(mid, () => { pttBusy = false; if (!pttHeld) pttUI("idle"); setTimeout(pttQueueNext, 250); }).then((ok) => {
+    if (!ok) { pttBusy = false; pttUI("idle"); }
+  }), 180);
+}
+function pttDown(e) {
+  e.preventDefault(); if (pttHeld || !current) return;
+  try { $("btnPtt").setPointerCapture(e.pointerId); } catch {}
+  pttHeld = true; audioCtx();
+  players.forEach((a) => a.pause()); pttBusy = false;
+  pttUI("wait"); if (navigator.vibrate) navigator.vibrate(25);
+  startRec({ ptt: true });
+}
+function pttUp() { if (!pttHeld) return; pttHeld = false; if (rec && rec.ptt) stopRec(false); else pttUI("idle"); }
+$("btnPtt").addEventListener("pointerdown", pttDown);
+["pointerup", "pointercancel", "lostpointercapture"].forEach((ev) => $("btnPtt").addEventListener(ev, pttUp));
+$("btnPtt").addEventListener("contextmenu", (e) => e.preventDefault());
+document.addEventListener("visibilitychange", () => { if (document.hidden) pttUp(); });
+
+function showComposer() {
+  const c = contact(current); const w = !!(c && c.walkie);
+  $("composer").hidden = w; $("pttBar").hidden = !w;
+  $("btnWalkie").classList.toggle("on", w); $("btnWalkie").setAttribute("aria-pressed", String(w));
+}
+$("btnWalkie").onclick = () => {
+  const c = contact(current); if (!c) return;
+  c.walkie = !c.walkie; saveContacts(); showComposer();
+  toast(c.walkie ? "📻 Modo walkie activado: mantén presionado para hablar" : "Modo walkie desactivado");
+};
 function photoBubble(m, box) {
   const img = document.createElement("img"); img.className = "ph"; img.alt = "Foto";
   if (m.w && m.h) img.style.aspectRatio = m.w + " / " + m.h;
@@ -528,7 +580,7 @@ function renderMsgs() {
   for (const m of msgsOf(current)) {
     const day = fmtDay(m.ts); if (day !== lastDay) { const d = document.createElement("div"); d.className = "day"; d.textContent = day; box.append(d); lastDay = day; }
     if (m.from === "sys") { const s = document.createElement("div"); s.className = "sys"; s.textContent = m.text; box.append(s); continue; }
-    const b = document.createElement("div"); b.className = "b" + (m.from === "me" ? " me" : "") + (m.kind ? " media" : "");
+    const b = document.createElement("div"); b.className = "b" + (m.from === "me" ? " me" : "") + (m.kind ? " media" : "") + (m.ptt ? " pttmsg" : "");
     if (m.kind === "img") b.append(photoBubble(m, box));
     else if (m.kind === "audio") b.append(voiceBubble(m));
     else b.textContent = m.text;
@@ -540,10 +592,11 @@ function renderMsgs() {
 }
 function openChat(id) {
   current = id; const c = contact(id); if (c) { c.unread = 0; saveContacts(); }
-  show("sChat"); renderChatHeader(); renderMsgs(); connect(id);
+  pttQueue.length = 0; pttBusy = false;
+  show("sChat"); showComposer(); renderChatHeader(); renderMsgs(); connect(id);
   try { location.hash = "chat-" + id; } catch {}
 }
-function closeChat() { stopRec(true); players.forEach((a) => a.pause()); current = null; show("sHome"); renderAll(); try { history.replaceState(null, "", location.pathname); } catch {} }
+function closeChat() { pttHeld = false; pttQueue.length = 0; stopRec(true); players.forEach((a) => a.pause()); current = null; show("sHome"); renderAll(); try { history.replaceState(null, "", location.pathname); } catch {} }
 
 // ---------------------------------------------------------------- dialogs
 const shareLink = () => location.origin + location.pathname + "#add=" + me.id + "&n=" + encodeURIComponent(me.name);

@@ -111,6 +111,13 @@ header.bar{display:flex;align-items:center;gap:12px;padding:12px max(16px,env(sa
 .clip{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;flex:none;color:var(--muted)}
 .clip svg,.send svg{width:22px;height:22px}
 .recbar{align-items:center}
+.pttbar{padding-top:12px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))}
+.ptt{flex:1;height:64px;border-radius:20px;background:var(--accent);color:#fff;font:800 17px var(--display);display:flex;align-items:center;justify-content:center;gap:10px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;transition:transform .08s,background .15s}
+.ptt.on{background:var(--bad);transform:scale(.97)}
+.ptt.wait{opacity:.7}
+.pttic{font-size:22px}
+#btnWalkie.on{background:var(--accent);color:#fff}
+.b.pttmsg .vn button{background:#7C5CFF}
 .rectime{flex:1;display:flex;align-items:center;gap:10px;font:700 16px var(--body);padding:0 6px}
 .rectime small{color:var(--muted);font-weight:500}
 .recdot{width:12px;height:12px;border-radius:50%;background:var(--bad);animation:blink 1s infinite}
@@ -142,7 +149,7 @@ header.bar{display:flex;align-items:center;gap:12px;padding:12px max(16px,env(sa
       <p>Mensajes y llamadas de voz por internet, directo entre teléfonos. Escribe tu nombre para empezar.</p>
       <div class="field"><label for="inName">Tu nombre</label><input id="inName" maxlength="40" autocomplete="name" placeholder="Ej. Iggy"></div>
       <button class="primary" id="btnStart">Empezar</button>
-      <div class="proto">Prototipo v9 · los mensajes se guardan solo en tu teléfono</div>
+      <div class="proto">Prototipo v10 · los mensajes se guardan solo en tu teléfono</div>
     </div>
   </section>
 
@@ -163,6 +170,7 @@ header.bar{display:flex;align-items:center;gap:12px;padding:12px max(16px,env(sa
       <button class="iconbtn" id="btnBack" aria-label="Volver"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
       <div class="av" id="chatAv"></div>
       <div class="who" id="chatWho" role="button" tabindex="0" style="cursor:pointer"><b id="chatName"></b><small id="chatStatus">desconectado</small></div>
+      <button class="iconbtn" id="btnWalkie" aria-label="Modo walkie-talkie" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="7" width="12" height="15" rx="2.5"/><path d="M9 7V2M10 11h4M10 14h4"/><circle cx="12" cy="18.2" r="1.3"/></svg></button>
       <button class="iconbtn" id="btnCall" aria-label="Llamar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/></svg></button>
     </header>
     <div class="msgs" id="msgs"></div>
@@ -174,6 +182,9 @@ header.bar{display:flex;align-items:center;gap:12px;padding:12px max(16px,env(sa
         <svg id="icoSend" hidden viewBox="0 0 24 24" fill="currentColor"><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12 2-12 2z"/></svg>
         <svg id="icoMic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
       </button>
+    </div>
+    <div class="composer pttbar" id="pttBar" hidden>
+      <button class="ptt" id="btnPtt" aria-label="Mantén presionado para hablar"><span class="pttic">📻</span><span id="pttLbl">Mantén presionado para hablar</span></button>
     </div>
     <div class="composer recbar" id="recBar" hidden>
       <button class="clip" id="btnRecCancel" aria-label="Cancelar grabación"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></button>
@@ -215,7 +226,7 @@ header.bar{display:flex;align-items:center;gap:12px;padding:12px max(16px,env(sa
     <div class="btns">
       <button class="primary" id="btnCopyLink">Copiar enlace</button>
       <button class="ghost" id="btnNotif">Activar avisos</button>
-      <div class="proto" id="verLbl" style="text-align:center;margin-top:10px">Loqui v9 · <span id="netLbl">…</span></div>
+      <div class="proto" id="verLbl" style="text-align:center;margin-top:10px">Loqui v10 · <span id="netLbl">…</span></div>
       <button class="ghost" data-close>Cerrar</button>
     </div>
     <p class="proto" style="text-align:left">Para recibir mensajes y llamadas, Loqui debe estar abierto. Los mensajes se guardan solo en este teléfono.</p>
