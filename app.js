@@ -13,6 +13,7 @@ const store = {
 };
 let me = store.get("me", null);
 let contacts = store.get("contacts", []);           // [{id,name,unread,last,ts}]
+if (me) contacts = contacts.filter((c) => c.id !== me.id);   // never list yourself
 const msgsOf = (id) => store.get("msgs." + id, []);
 const saveMsgs = (id, list) => store.set("msgs." + id, list.slice(-500));
 const saveContacts = () => store.set("contacts", contacts);
@@ -157,6 +158,7 @@ window.addEventListener("pageshow", onResume);
 
 function setupConn(conn) {
   const id = conn.peer.replace(PREFIX, "").toUpperCase();
+  if (me && id === me.id) { try { conn.close(); } catch {} return; }
   conn.on("open", () => {
     const old = conns.get(id);
     if (old && old !== conn && old.open) {
@@ -614,7 +616,12 @@ function renderContacts() {
     const last = document.createElement("div"); last.className = "rowlast"; last.textContent = c.last || (isOnline(c.id) ? "En línea" : "Código " + c.id);
     main.append(top, last); r.append(av, main);
     if (c.unread) { const b = document.createElement("span"); b.className = "badge"; b.textContent = c.unread; r.append(b); }
-    r.onclick = () => openChat(c.id);
+    // tap opens the chat; press and hold (or right-click) opens rename/delete
+    let holdT = null, held = false;
+    r.addEventListener("pointerdown", () => { held = false; holdT = setTimeout(() => { held = true; if (navigator.vibrate) navigator.vibrate(25); openInfo(c.id); }, 550); });
+    ["pointerup", "pointerleave", "pointercancel"].forEach((ev) => r.addEventListener(ev, () => clearTimeout(holdT)));
+    r.addEventListener("contextmenu", (e) => { e.preventDefault(); clearTimeout(holdT); if (!held) { held = true; openInfo(c.id); } });
+    r.onclick = () => { if (held) { held = false; return; } openChat(c.id); };
     box.append(r);
   });
 }
@@ -664,9 +671,10 @@ function addContact() {
   $("dlgAdd").hidden = true; connect(id); renderAll(); openChat(id);
 }
 // contact info: rename / delete (tap the name in the chat header)
-let delArmed = false;
-function openInfo() {
-  const c = contact(current); if (!c) return;
+let delArmed = false, infoId = null;
+function openInfo(id) {
+  infoId = typeof id === "string" ? id : current;
+  const c = contact(infoId); if (!c) return;
   $("infoCode").textContent = c.id; $("infoName").value = c.name;
   delArmed = false; $("btnDel").textContent = "Eliminar contacto y chat";
   $("dlgInfo").hidden = false;
@@ -674,17 +682,18 @@ function openInfo() {
 $("chatWho").onclick = openInfo;
 $("chatWho").onkeydown = (e) => { if (e.key === "Enter") openInfo(); };
 $("btnInfoSave").onclick = () => {
-  const c = contact(current); const n = $("infoName").value.trim().slice(0, 40);
+  const c = contact(infoId); const n = $("infoName").value.trim().slice(0, 40);
   if (c && n) { c.name = n; saveContacts(); renderAll(); }
   $("dlgInfo").hidden = true;
 };
 $("btnDel").onclick = () => {
   if (!delArmed) { delArmed = true; $("btnDel").textContent = "Toca otra vez para confirmar"; return; }
-  const id = current; $("dlgInfo").hidden = true;
+  const id = infoId; $("dlgInfo").hidden = true;
   dropConn(id); contacts = contacts.filter((c) => c.id !== id); saveContacts();
   msgsOf(id).forEach((m) => { if (m.kind) forgetMedia(m.mid); });
   try { localStorage.removeItem("loqui.msgs." + id); } catch {}
-  closeChat(); toast("Contacto eliminado");
+  if (current === id) closeChat(); else renderAll();
+  toast("Contacto eliminado");
 };
 document.querySelectorAll("[data-close]").forEach((b) => (b.onclick = () => (b.closest(".veil").hidden = true)));
 document.querySelectorAll(".veil").forEach((v) => v.addEventListener("click", (e) => { if (e.target === v) v.hidden = true; }));
