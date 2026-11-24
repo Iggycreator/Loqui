@@ -111,7 +111,7 @@ function startPeer() {
     } else if (e.type === "unavailable-id") {
       // The server still remembers our previous (frozen) session; it frees the code shortly.
       idTakenTries++;
-      if (idTakenTries === 6) toast("Loqui parece abierto en otra pestaña o dispositivo con tu código");
+      if (idTakenTries === 6) toast("Otro teléfono está usando tu código. Toca «Tu código» → «Generar un código nuevo»");
       try { p.destroy(); } catch {}
       scheduleRevive(Math.min(15000, 2500 * idTakenTries));
     } else if (["network", "server-error", "socket-error", "socket-closed", "disconnected"].includes(e.type)) {
@@ -659,7 +659,7 @@ function closeChat() { pttHeld = false; pttQueue.length = 0; stopRec(true); play
 
 // ---------------------------------------------------------------- dialogs
 const shareLink = () => location.origin + location.pathname + "#add=" + me.id + "&n=" + encodeURIComponent(me.name);
-function openCode() { $("bigCode").textContent = me.id; $("myLink").value = shareLink(); $("dlgCode").hidden = false; }
+function openCode() { newCodeArmed = false; $("btnNewCode").textContent = "Generar un código nuevo"; $("bigCode").textContent = me.id; $("myLink").value = shareLink(); $("dlgCode").hidden = false; }
 function openAdd(code = "", name = "") { $("inCode").value = code; $("inCName").value = name; $("dlgAdd").hidden = false; setTimeout(() => $("inCode").focus(), 50); }
 function addContact() {
   const id = cleanCode($("inCode").value); const name = $("inCName").value.trim().slice(0, 40);
@@ -718,6 +718,18 @@ $("btnCopyLink").onclick = async () => {
   const link = shareLink();
   if (navigator.share) { try { await navigator.share({ title: "Loqui", text: "Háblame por Loqui, mi código es " + me.id, url: link }); return; } catch {} }
   try { await navigator.clipboard.writeText(link); toast("Enlace copiado"); } catch { $("myLink").select(); toast("Selecciona y copia el enlace"); }
+};
+// New identity: for when two phones ended up with the same code. Contacts and chats stay.
+let newCodeArmed = false;
+$("btnNewCode").onclick = () => {
+  if (!newCodeArmed) { newCodeArmed = true; $("btnNewCode").textContent = "Toca otra vez: tus contactos tendrán que agregarte de nuevo"; return; }
+  newCodeArmed = false; $("btnNewCode").textContent = "Generar un código nuevo";
+  conns.forEach((c, id) => dropConn(id));
+  me = { id: newCode(), name: me.name }; store.set("me", me);
+  try { peer && peer.destroy(); } catch {} peer = null; open = false;
+  startPeer(); renderAll();
+  $("bigCode").textContent = me.id; $("myLink").value = shareLink();
+  toast("Tu código nuevo es " + me.id + ". Compártelo con tus contactos");
 };
 $("btnNotif").onclick = async () => {
   if (!("Notification" in window)) return toast("Este navegador no permite avisos. En iPhone, instala Loqui en la pantalla de inicio.");
