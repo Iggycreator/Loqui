@@ -38,6 +38,14 @@ const fmtDay = (ts) => {
   return d.toLocaleDateString([], { day: "numeric", month: "long" });
 };
 let toastT;
+// ---- call diagnostics: a short log kept on the phone, copied from «Tu código»
+const DIAG_KEY = "loqui-diag";
+let diag = []; try { diag = JSON.parse(localStorage.getItem(DIAG_KEY) || "[]"); } catch { diag = []; }
+function dlog(t) {
+  const d = new Date(); const ts = d.toTimeString().slice(0, 8);
+  diag.push(ts + " " + t); if (diag.length > 400) diag.splice(0, diag.length - 400);
+  try { localStorage.setItem(DIAG_KEY, JSON.stringify(diag)); } catch {}
+}
 function toast(t) { const el = $("toast"); el.textContent = t; el.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => (el.hidden = true), 2600); }
 function show(screen) { for (const s of ["sOnboard", "sHome", "sChat"]) $(s).hidden = s !== screen; }
 
@@ -98,13 +106,14 @@ function startPeer() {
   open = false;
   const p = new Peer(PREFIX + me.id.toLowerCase(), { debug: 0, config: { iceServers: ICE_SERVERS } });
   peer = p;
-  p.on("open", () => { if (peer !== p) return; open = true; idTakenTries = 0; renderAll(); redialAll(true); });
+  p.on("open", () => { if (peer !== p) return; dlog("servidor: conectado"); open = true; idTakenTries = 0; renderAll(); redialAll(true); });
   p.on("connection", (conn) => setupConn(conn));
   p.on("call", onIncomingCall);
-  p.on("disconnected", () => { if (peer !== p) return; open = false; renderAll(); scheduleRevive(1500); });
+  p.on("disconnected", () => { if (peer !== p) return; dlog("servidor: desconectado"); open = false; renderAll(); scheduleRevive(1500); });
   p.on("close", () => { if (peer !== p) return; open = false; renderAll(); scheduleRevive(2000); });
   p.on("error", (e) => {
     if (peer !== p) return;
+    dlog("error: " + e.type);
     if (e.type === "peer-unavailable") {
       const m = /loqui-([a-z0-9]+)/i.exec(e.message || ""); if (m) { const id = m[1].toUpperCase(); if (!isOnline(id)) conns.delete(id); renderAll(); }
       if (call && call.state === "calling") endCall("No está conectado (código " + call.id + ")");
@@ -133,7 +142,7 @@ function connect(id, force) {
   if (!open || !peer || id === me.id || isOnline(id)) return;
   const t = dialing.get(id) || 0; if (!force && Date.now() - t < 7000) return;   // don't pile up dials
   dialing.set(id, Date.now());
-  try { const c = peer.connect(PREFIX + id.toLowerCase(), { reliable: true, metadata: { name: me.name } }); c._mine = true; setupConn(c); } catch {}
+  try { const c = peer.connect(PREFIX + id.toLowerCase(), { reliable: true, metadata: { name: me.name, prev: me.prev || [] } }); c._mine = true; setupConn(c); } catch {}
 }
 // heartbeat + health check
 setInterval(() => {
@@ -169,13 +178,42 @@ function setupConn(conn) {
       setTimeout(() => { try { old.close(); } catch {} }, 1500);
     }
     conns.set(id, conn); lastSeen.set(id, Date.now());
-    if (!contact(id)) { contacts.push({ id, name: conn.metadata?.name || id, unread: 0, last: "", ts: Date.now() }); saveContacts(); toast((conn.metadata?.name || id) + " te agregó"); }
-    conn.send({ t: "hello", name: me.name });
+    // a contact who changed code tells us its old ones: their chat moves to the new code
+    const prev = Array.isArray(conn.metadata?.prev) ? conn.metadata.prev : [];
+    prev.forEach((p) => { if (typeof p === "string" && CODE_RE.test(p) && p !== id && contact(p)) mergeContact(p, id); });
+    if (!contact(id)) {
+      const nm = (conn.metadata?.name || id).trim();
+      contacts.push({ id, name: nm, unread: 0, last: "", ts: Date.now() }); saveContacts();
+      const twin = contacts.find((c) => c.id !== id && c.name.trim().toLowerCase() === nm.toLowerCase() && nm.toLowerCase() !== id.toLowerCase());
+      if (twin) askMerge(twin.id, id, nm); else toast(nm + " te agregó");
+    }
+    conn.send({ t: "hello", name: me.name, prev: me.prev || [] });
     flush(id); renderAll();
   });
   conn.on("data", (d) => onData(id, d));
   conn.on("close", () => { if (conns.get(id) === conn) conns.delete(id); renderAll(); });
   conn.on("error", () => { if (conns.get(id) === conn) conns.delete(id); renderAll(); });
+}
+const CODE_RE = /^[A-Z0-9]{4,12}$/;
+// Move a contact's chat from an old code to a new one (same person, new phone/app/code)
+function mergeContact(oldId, newId) {
+  const o = contact(oldId); if (!o || oldId === newId) return;
+  let n = contact(newId);
+  const msgs = msgsOf(oldId).concat(msgsOf(newId)).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const seen = new Set(); const merged = msgs.filter((m) => (m.mid && seen.has(m.mid) ? false : (seen.add(m.mid), true)));
+  saveMsgs(newId, merged); store.del ? store.del("msgs." + oldId) : store.set("msgs." + oldId, []);
+  if (!n) { o.id = newId; n = o; }
+  else { n.name = o.name || n.name; n.unread = (n.unread || 0) + (o.unread || 0); n.ts = Math.max(n.ts || 0, o.ts || 0); n.last = n.last || o.last; contacts = contacts.filter((c) => c !== o); }
+  dropConn(oldId);
+  if (current === oldId) current = newId;
+  dlog("contacto " + oldId + " → " + newId);
+  saveContacts(); renderAll(); if (current === newId) renderMsgs();
+}
+function askMerge(oldId, newId, name) {
+  setTimeout(() => {
+    if (!contact(oldId) || !contact(newId)) return;
+    if (confirm("«" + name + "» apareció con un código nuevo (" + newId + ").\n¿Es la misma persona que ya tenías (" + oldId + ")?\n\nAceptar = unir los dos en uno solo, con todo el chat.")) mergeContact(oldId, newId);
+  }, 400);
 }
 function send(id, obj) { const c = conns.get(id); if (c && c.open) { try { c.send(obj); return true; } catch {} } return false; }
 function flush(id) {
@@ -192,7 +230,12 @@ function onData(id, d) {
   lastSeen.set(id, Date.now());
   if (d.t === "ping") return;
   const c = contact(id);
-  if (d.t === "hello" && c && typeof d.name === "string") { c.name = d.name.slice(0, 40); saveContacts(); renderAll(); }
+  if (d.t === "hello" && c && typeof d.name === "string") {
+    c.name = d.name.slice(0, 40); saveContacts();
+    if (Array.isArray(d.prev)) d.prev.forEach((p) => { if (typeof p === "string" && CODE_RE.test(p) && p !== id && contact(p)) mergeContact(p, id); });
+    renderAll();
+  }
+  else if (d.t === "moved" && typeof d.to === "string" && CODE_RE.test(d.to) && d.to !== me.id) { mergeContact(id, d.to); connect(d.to, true); toast((contact(d.to)?.name || d.to) + " cambió su código; ya está actualizado"); }
   else if (d.t === "msg" && typeof d.text === "string") {
     const list = msgsOf(id);
     if (!list.some((m) => m.mid === d.mid)) {
@@ -469,9 +512,36 @@ let wakeLock = null;
 async function keepAwake(on) {
   try {
     if (on && call && "wakeLock" in navigator && document.visibilityState === "visible") {
-      if (!wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); }
+      if (!wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); dlog("pantalla encendida: ok"); wakeLock.addEventListener("release", () => { wakeLock = null; }); }
     } else if (!on && wakeLock) { const w = wakeLock; wakeLock = null; await w.release(); }
-  } catch { wakeLock = null; }
+  } catch (e) { wakeLock = null; if (on) dlog("pantalla encendida: NO (" + (e && e.name) + ")"); }
+}
+if (!("wakeLock" in navigator)) dlog("este navegador no permite mantener la pantalla encendida");
+document.addEventListener("visibilitychange", () => { if (call) dlog(document.hidden ? "app oculta / pantalla apagada" : "app visible"); });
+window.addEventListener("offline", () => dlog("sin internet"));
+window.addEventListener("online", () => dlog("internet de vuelta"));
+// every 5 s during a call: which path the audio takes (direct / relay), delay, and whether audio still arrives
+function watchStats(c) {
+  let lastBytes = -1, lastPath = "", n = 0;
+  const tick = async () => {
+    if (call !== c) return;
+    const pc = c.media && c.media.peerConnection;
+    if (pc && !c.reconnecting) try {
+      const st = await pc.getStats(); let pair = null, bytes = 0, lost = 0; const cand = {};
+      st.forEach((r) => { if (r.type === "candidate-pair" && (r.nominated || r.selected) && r.state === "succeeded") pair = r;
+        if (r.type === "local-candidate" || r.type === "remote-candidate") cand[r.id] = r;
+        if (r.type === "inbound-rtp" && r.kind === "audio") { bytes = r.bytesReceived || 0; lost = r.packetsLost || 0; } });
+      const lc = pair && cand[pair.localCandidateId], rc = pair && cand[pair.remoteCandidateId];
+      const path = lc ? (lc.candidateType + "/" + (lc.protocol || "") + " → " + (rc ? rc.candidateType : "?")) : "sin ruta";
+      const rtt = pair && pair.currentRoundTripTime ? Math.round(pair.currentRoundTripTime * 1000) + " ms" : "?";
+      if (path !== lastPath) { dlog("ruta: " + path + " · retardo " + rtt); lastPath = path; }
+      else if (++n % 6 === 0) dlog("ok · retardo " + rtt + " · perdidos " + lost);
+      if (lastBytes >= 0 && bytes === lastBytes) dlog("¡audio detenido! (no llega sonido)");
+      lastBytes = bytes;
+    } catch {}
+    setTimeout(tick, 5000);
+  };
+  setTimeout(tick, 3000);
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden && call) { keepAwake(true); if (call.state === "connected") checkCallPath(); } });
 async function startCall(id) {
@@ -482,12 +552,14 @@ async function startCall(id) {
   try { call.stream = await micStream(); }
   catch { endCall("No se pudo usar el micrófono"); return toast("Permite el micrófono para llamar"); }
   if (!call) return;
+  dlog("llamando a " + id);
   const media = peer.call(PREFIX + id.toLowerCase(), call.stream, { metadata: { name: me.name } });
   call.media = media; wireMedia(media);
   call.timeout = setTimeout(() => { if (call && call.state === "calling") { send(id, { t: "call-end" }); endCall("No contesta"); } }, 45000);
 }
 function onIncomingCall(media) {
   const id = media.peer.replace(PREFIX, "").toUpperCase();
+  dlog("llamada entrante de " + id + (media.metadata && media.metadata.reconnect ? " (reconexión)" : ""));
   if (call && call.reconnecting && call.id === id) {          // same call coming back after a drop
     if (call.media && me.id < id) { media.close(); return; }  // both redialed at once: mine wins
     try { call.media && call.media.close(); } catch {}
@@ -514,10 +586,10 @@ function wireMedia(media) {
   media.on("stream", (remote) => {
     playRemote(remote);
     if (!call) return;
-    if (call.reconnecting) { stopReconnect(); toast("Llamada reconectada"); return; }
+    if (call.reconnecting) { dlog("RECONECTADA tras " + Math.round((Date.now() - (call.dropT || Date.now())) / 1000) + " s"); stopReconnect(); toast("Llamada reconectada"); return; }
     if (call.state === "connected") return;
     clearTimeout(call.timeout); ring(false);
-    call.state = "connected"; call.start = Date.now();
+    call.state = "connected"; call.start = Date.now(); dlog("llamada conectada"); watchStats(call);
     callUI(call.id, "00:00", false);
     call.timer = setInterval(() => { if (call) $("callState").textContent = call.reconnecting || call.weak ? "Reconectando…" : dur(Date.now() - call.start); }, 1000);
   });
@@ -529,6 +601,7 @@ function wireMedia(media) {
     pc.addEventListener("iceconnectionstatechange", () => {
       if (!call || call.media !== media) return;
       const st = pc.iceConnectionState;
+      dlog("ruta de audio: " + st);
       clearTimeout(media._weakT);
       if (st === "disconnected") { call.weak = true; media._weakT = setTimeout(() => { if (call && call.media === media && pc.iceConnectionState !== "connected" && pc.iceConnectionState !== "completed") dropped("Se cortó la llamada"); }, 4000); }
       else if (st === "connected" || st === "completed") call.weak = false;
@@ -543,7 +616,8 @@ function dropped(msg) {
   if (!call) return;
   if (call.state !== "connected") return endCall(msg);
   if (call.reconnecting) return;
-  const c = call; c.reconnecting = true; c.weak = false;
+  const c = call; c.reconnecting = true; c.weak = false; c.dropT = Date.now();
+  dlog("CORTE (" + msg + ") a los " + dur(Date.now() - c.start) + " · pantalla " + (document.hidden ? "oculta" : "visible") + " · " + (navigator.onLine ? "online" : "OFFLINE") + " · servidor " + (open ? "ok" : "caído"));
   try { c.media && c.media.close(); } catch {}
   c.media = null; $("callState").textContent = "Reconectando…";
   c.giveUp = setTimeout(() => { if (call === c && c.reconnecting) endCall("Se cortó la llamada"); }, 45000);
@@ -553,6 +627,7 @@ function dropped(msg) {
     if (!open) revive();
     const iRedial = me.id < c.id || Date.now() - t0 > 10000;
     if (iRedial && open && !c.media) {
+      dlog("rellamando…");
       try { const m = peer.call(PREFIX + c.id.toLowerCase(), c.stream, { metadata: { name: me.name, reconnect: true } }); c.media = m; wireMedia(m);
         setTimeout(() => { if (call === c && c.reconnecting && c.media === m) { try { m.close(); } catch {} c.media = null; } }, 6000); } catch {}
     }
@@ -601,6 +676,7 @@ function hangUp() { if (!call) return; send(call.id, { t: "call-end" }); endCall
 function endCall(msg, remote) {
   if (!call) return;
   const c = call; call = null; keepAwake(false);
+  dlog("fin: " + (msg || "") + (c.start ? " · duró " + dur(Date.now() - c.start) : ""));
   ring(false); clearTimeout(c.timeout); clearInterval(c.timer); clearTimeout(c.giveUp); clearTimeout(c.retry);
   if (c.start) addSystem(c.id, "Llamada de voz · " + dur(Date.now() - c.start));
   else if (!c.incoming && msg !== "Llamada terminada") addSystem(c.id, msg + " · " + fmtTime(Date.now()));
@@ -743,15 +819,23 @@ $("btnCopyLink").onclick = async () => {
 };
 // New identity: for when two phones ended up with the same code. Contacts and chats stay.
 let newCodeArmed = false;
+$("btnDiag").onclick = async () => {
+  const text = "Loqui v15 diagnóstico · " + navigator.userAgent + "\n" + diag.slice(-150).join("\n");
+  try { if (navigator.share) { await navigator.share({ title: "Loqui diagnóstico", text }); return; } } catch {}
+  try { await navigator.clipboard.writeText(text); toast("Diagnóstico copiado: pégalo en un chat"); } catch { toast("No se pudo copiar"); }
+};
 $("btnNewCode").onclick = () => {
   if (!newCodeArmed) { newCodeArmed = true; $("btnNewCode").textContent = "Toca otra vez: tus contactos tendrán que agregarte de nuevo"; return; }
   newCodeArmed = false; $("btnNewCode").textContent = "Generar un código nuevo";
-  conns.forEach((c, id) => dropConn(id));
-  me = { id: newCode(), name: me.name }; store.set("me", me);
-  try { peer && peer.destroy(); } catch {} peer = null; open = false;
-  startPeer(); renderAll();
+  const oldId = me.id, nid = newCode();
+  conns.forEach((c, id) => send(id, { t: "moved", to: nid }));        // contacts online now update by themselves
+  const prevs = (me.prev || []).concat(oldId).slice(-5);              // the rest learn it when we reconnect
+  me = { id: nid, name: me.name, prev: prevs }; store.set("me", me);
+  const oldPeer = peer; peer = null; open = false;
+  setTimeout(() => { conns.forEach((c, id) => { if (!c.provider || c.provider === oldPeer) dropConn(id); }); try { oldPeer && oldPeer.destroy(); } catch {} startPeer(); renderAll(); }, 700);
+  renderAll();
   $("bigCode").textContent = me.id; $("myLink").value = shareLink();
-  toast("Tu código nuevo es " + me.id + ". Compártelo con tus contactos");
+  toast("Tu código nuevo es " + me.id + ". Tus contactos se actualizan solos al conectarse");
 };
 $("btnNotif").onclick = async () => {
   if (!("Notification" in window)) return toast("Este navegador no permite avisos. En iPhone, instala Loqui en la pantalla de inicio.");
