@@ -35,6 +35,10 @@ input,textarea{font:inherit;color:inherit}
 header.bar{display:flex;align-items:center;gap:12px;padding:12px max(16px,env(safe-area-inset-left,0px)) 12px max(16px,env(safe-area-inset-right,0px));border-bottom:1px solid var(--line);background:var(--panel)}
 .brand{font:800 24px/1 var(--display);letter-spacing:-.5px;display:flex;align-items:center;gap:8px}
 .brand img{width:30px;height:30px;border-radius:8px}
+.slogan{white-space:nowrap;font:800 19px/1 var(--display);color:var(--accent);letter-spacing:.2px;margin-top:-4px}
+.brandbox{display:flex;flex-direction:column;gap:3px}
+.bar .slogan{font-size:11px;margin:0 0 0 38px;opacity:.95}
+.bar .chip{white-space:nowrap}
 .spacer{flex:1}
 .chip{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:var(--bg);border:1px solid var(--line);font:600 13px var(--body);letter-spacing:.5px}
 .iconbtn{width:40px;height:40px;border-radius:12px;display:grid;place-items:center}
@@ -145,6 +149,7 @@ header.bar{display:flex;align-items:center;gap:12px;padding:12px max(16px,env(sa
   <section class="screen" id="sOnboard" hidden>
     <div class="onboard">
       <div class="brand"><img src="icon-192.png" alt=""> Loqui</div>
+      <div class="slogan">Vuélvete Loqui</div>
       <h1>Habla con quien quieras, en cualquier país.</h1>
       <p>Mensajes y llamadas de voz por internet, directo entre teléfonos. Escribe tu nombre para empezar.</p>
       <div class="field"><label for="inName">Tu nombre</label><input id="inName" maxlength="40" autocomplete="name" placeholder="Ej. Iggy"></div>
@@ -156,7 +161,7 @@ header.bar{display:flex;align-items:center;gap:12px;padding:12px max(16px,env(sa
   <!-- contacts -->
   <section class="screen" id="sHome" hidden>
     <header class="bar">
-      <div class="brand"><img src="icon-192.png" alt=""> Loqui</div>
+      <div class="brandbox"><div class="brand"><img src="icon-192.png" alt=""> Loqui</div><div class="slogan">Vuélvete Loqui</div></div>
       <div class="spacer"></div>
       <button class="chip" id="btnMyCode" title="Tu código">Tu código <b id="myCode">—</b></button>
     </header>

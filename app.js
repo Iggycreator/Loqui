@@ -814,7 +814,7 @@ $("btnAddOk").onclick = addContact;
 $("btnMyCode").onclick = openCode;
 $("btnCopyLink").onclick = async () => {
   const link = shareLink();
-  if (navigator.share) { try { await navigator.share({ title: "Loqui", text: "Háblame por Loqui, mi código es " + me.id, url: link }); return; } catch {} }
+  if (navigator.share) { try { await navigator.share({ title: "Loqui", text: "Vuélvete Loqui 🐾 Háblame por Loqui, sin número de teléfono. Mi código es " + me.id, url: link }); return; } catch {} }
   try { await navigator.clipboard.writeText(link); toast("Enlace copiado"); } catch { $("myLink").select(); toast("Selecciona y copia el enlace"); }
 };
 // New identity: for when two phones ended up with the same code. Contacts and chats stay.
