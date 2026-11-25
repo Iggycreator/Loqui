@@ -463,11 +463,22 @@ function callUI(id, state, incoming) {
   $("callIncoming").hidden = !incoming; $("callActive").hidden = incoming;
   $("callAv").classList.toggle("ring", state !== "connected");
 }
+// Keep the screen on during a call: when the phone locks itself (after 30 s - 2 min),
+// the browser freezes the app and the call drops. Re-taken when the app comes back.
+let wakeLock = null;
+async function keepAwake(on) {
+  try {
+    if (on && call && "wakeLock" in navigator && document.visibilityState === "visible") {
+      if (!wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); }
+    } else if (!on && wakeLock) { const w = wakeLock; wakeLock = null; await w.release(); }
+  } catch { wakeLock = null; }
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden && call) { keepAwake(true); if (call.state === "connected") checkCallPath(); } });
 async function startCall(id) {
   if (call) return;
   if (!open) return toast("Sin conexión con el servidor. Revisa internet.");
   call = { id, state: "calling", muted: false };
-  callUI(id, "Llamando…", false); ring(true, true);
+  callUI(id, "Llamando…", false); ring(true, true); keepAwake(true);
   try { call.stream = await micStream(); }
   catch { endCall("No se pudo usar el micrófono"); return toast("Permite el micrófono para llamar"); }
   if (!call) return;
@@ -478,6 +489,8 @@ async function startCall(id) {
 function onIncomingCall(media) {
   const id = media.peer.replace(PREFIX, "").toUpperCase();
   if (call && call.reconnecting && call.id === id) {          // same call coming back after a drop
+    if (call.media && me.id < id) { media.close(); return; }  // both redialed at once: mine wins
+    try { call.media && call.media.close(); } catch {}
     call.media = media; media.answer(call.stream); wireMedia(media); return;
   }
   if (media.metadata && media.metadata.reconnect) { media.close(); return; }   // that call already ended here
@@ -493,7 +506,7 @@ async function acceptCall() {
   ring(false); $("callState").textContent = "Conectando…";
   try { call.stream = await micStream(); }
   catch { send(call.id, { t: "call-decline" }); endCall("No se pudo usar el micrófono"); return toast("Permite el micrófono para contestar"); }
-  call.media.answer(call.stream); wireMedia(call.media);
+  call.media.answer(call.stream); wireMedia(call.media); keepAwake(true);
   $("callIncoming").hidden = true; $("callActive").hidden = false;
 }
 function declineCall() { if (!call) return; send(call.id, { t: "call-decline" }); addSystem(call.id, "Llamada rechazada · " + fmtTime(Date.now())); endCall("Llamada rechazada"); }
@@ -516,9 +529,10 @@ function wireMedia(media) {
     pc.addEventListener("iceconnectionstatechange", () => {
       if (!call || call.media !== media) return;
       const st = pc.iceConnectionState;
-      if (st === "disconnected") call.weak = true;
+      clearTimeout(media._weakT);
+      if (st === "disconnected") { call.weak = true; media._weakT = setTimeout(() => { if (call && call.media === media && pc.iceConnectionState !== "connected" && pc.iceConnectionState !== "completed") dropped("Se cortó la llamada"); }, 4000); }
       else if (st === "connected" || st === "completed") call.weak = false;
-      else if (st === "failed") dropped("Se cortó la llamada");
+      else if (st === "failed" || st === "closed") dropped("Se cortó la llamada");
     });
   };
   watch();
@@ -532,10 +546,12 @@ function dropped(msg) {
   const c = call; c.reconnecting = true; c.weak = false;
   try { c.media && c.media.close(); } catch {}
   c.media = null; $("callState").textContent = "Reconectando…";
-  c.giveUp = setTimeout(() => { if (call === c && c.reconnecting) endCall("Se cortó la llamada"); }, 25000);
-  const iRedial = me.id < c.id;
+  c.giveUp = setTimeout(() => { if (call === c && c.reconnecting) endCall("Se cortó la llamada"); }, 45000);
+  const t0 = Date.now();
   const tryCall = () => {
     if (call !== c || !c.reconnecting) return;
+    if (!open) revive();
+    const iRedial = me.id < c.id || Date.now() - t0 > 10000;
     if (iRedial && open && !c.media) {
       try { const m = peer.call(PREFIX + c.id.toLowerCase(), c.stream, { metadata: { name: me.name, reconnect: true } }); c.media = m; wireMedia(m);
         setTimeout(() => { if (call === c && c.reconnecting && c.media === m) { try { m.close(); } catch {} c.media = null; } }, 6000); } catch {}
@@ -545,6 +561,12 @@ function dropped(msg) {
   c.retry = setTimeout(tryCall, 1200);   // give an explicit "colgó" message time to arrive first
   connect(c.id, true);
 }
+function checkCallPath() {
+  if (!call || call.state !== "connected" || call.reconnecting) return;
+  const pc = call.media && call.media.peerConnection, st = pc && pc.iceConnectionState;
+  if (!pc || st === "failed" || st === "closed" || st === "disconnected") dropped("Se cortó la llamada");
+}
+window.addEventListener("online", () => setTimeout(checkCallPath, 800));
 function stopReconnect() { if (!call) return; call.reconnecting = false; call.weak = false; clearTimeout(call.giveUp); clearTimeout(call.retry); }
 // Remote voice goes through a gain + limiter so it is clearly louder than the phone's
 // default call level, without distorting. The <audio> element stays attached (muted)
@@ -578,7 +600,7 @@ const dur = (ms) => { const s = Math.floor(ms / 1000); return String(Math.floor(
 function hangUp() { if (!call) return; send(call.id, { t: "call-end" }); endCall("Llamada terminada"); }
 function endCall(msg, remote) {
   if (!call) return;
-  const c = call; call = null;
+  const c = call; call = null; keepAwake(false);
   ring(false); clearTimeout(c.timeout); clearInterval(c.timer); clearTimeout(c.giveUp); clearTimeout(c.retry);
   if (c.start) addSystem(c.id, "Llamada de voz · " + dur(Date.now() - c.start));
   else if (!c.incoming && msg !== "Llamada terminada") addSystem(c.id, msg + " · " + fmtTime(Date.now()));
